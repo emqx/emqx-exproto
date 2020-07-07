@@ -48,11 +48,13 @@
         ]).
 
 -define(SERVER, ?MODULE).
+-define(DEFAULT_CBM, main).
 
--type state() :: #{drivers := [{atom(), pid()}]}.
+%-type state() :: #{drivers := [{atom(), pid()}]}.
 
 -type driver() :: #{name := driver_name(),
                     module := driver_module(),
+                    cbm := module(),
                     pid := pid(),
                     opts := list()
                    }.
@@ -61,7 +63,7 @@
 
 -type driver_module() :: python | java.
 
--type mfargs() :: {module(), function(), list()}.
+-type fargs() :: {function(), list()}.
 
 %%--------------------------------------------------------------------
 %% APIs
@@ -77,7 +79,7 @@ start_link() ->
 -spec(ensure_driver(driver_name(), list()) -> {ok, pid()} | {error, any()}).
 ensure_driver(Name, Opts) ->
     {value, {_, Type}, NOpts} = lists:keytake(type, 1, Opts),
-    gen_server:call(?SERVER, {ensure, {Type, Name, Opts}}).
+    gen_server:call(?SERVER, {ensure, {Type, Name, NOpts}}).
 
 -spec(stop_drivers() -> ok).
 stop_drivers() ->
@@ -98,44 +100,46 @@ lookup(Name) ->
         Driver when is_map(Driver) -> {ok, Driver}
     end.
 
--spec(call(driver(), mfargs()) -> {ok, any()} | {error, any()}).
-call(_Driver = #{module := Mod, pid := Pid}, MFArgs) ->
-    do_call(Mod, DriverPid, MFArgs).
+-spec(call(driver(), fargs()) -> {ok, any()} | {error, any()}).
+call(_Driver = #{module := Mod, pid := Pid, cbm := Cbm}, FArgs) ->
+    do_call(Mod, Pid, Cbm, FArgs).
 
 %% @private
-do_call(Mod, Pid, {M, F, Args}) ->
-    case catch apply(Mod, call, [Pid, M, F, Args]) of
+do_call(Mod, Pid, Cbm, {F, Args}) ->
+    case catch apply(Mod, call, [Pid, Cbm, F, Args]) of
         ok -> ok;
         undefined -> ok;
         {_Ok = 0, Return} -> {ok, Return};
         {_Err = 1, Reason} -> {error, Reason};
         {'EXIT', Reason, Stk} ->
             ?LOG(error, "CALL ~p ~p:~p(~p), exception: ~p, stacktrace ~0p",
-                        [Mod, M, F, Args, Reason, Stk]),
+                        [Mod, Cbm, F, Args, Reason, Stk]),
             {error, Reason};
         _X ->
             ?LOG(error, "CALL ~p ~p:~p(~p), unknown return: ~0p",
-                        [Mod, M, F, Args, _X]),
+                        [Mod, Cbm, F, Args, _X]),
             {error, unknown_return_format}
     end.
 
 %%--------------------------------------------------------------------
 %% gen_server callbacks
 %%--------------------------------------------------------------------
+
 init([]) ->
     {ok, #{drivers => []}}.
 
 handle_call({ensure, {Type, Name, Opts}}, _From, State = #{drivers := Drivers}) ->
     case lists:keyfind(Name, 1, Drivers) of
         false ->
-            case do_start_driver(Type, Name, Opts) of
+            case do_start_driver(Type, Opts) of
                 {ok, Pid} ->
                     Driver = #{name => Name,
                                module => module(Type),
+                               cbm => proplists:get_value(cbm, Opts, ?DEFAULT_CBM),
                                pid => Pid,
                                opts => Opts},
                     ok = save(Name, Driver),
-                    reply({ok, Driver}, State#{drivers => [{Name, Driver} | Drivers]};
+                    reply({ok, Driver}, State#{drivers => [{Name, Driver} | Drivers]});
                 {error, Reason} ->
                     reply({error, Reason}, State)
             end;
@@ -149,28 +153,28 @@ handle_call(stop_all, _From, State = #{drivers := Drivers}) ->
         _ = do_stop_drviver(Pid),
         ok = erase(Name)
       end, Drivers),
-    reply(ok, State{drivers => []});
+    reply(ok, State#{drivers => []});
 
 handle_call({stop, Name}, _From, State = #{drivers := Drivers}) ->
     case lists:keyfind(Name, 1, Drivers) of
         false ->
             reply({error, not_found}, State);
         {_, Pid} ->
-            _ = do_stop_drviver(DriverPid),
+            _ = do_stop_drviver(Pid),
             ok = erase(Name),
             reply(ok, State#{drivers => Drivers -- [{Name, Pid}]})
     end;
 
 handle_call(Req, _From, State) ->
-    ?WARNING("Unexpected request: ~p", [Req]),
+    ?WARN("Unexpected request: ~p", [Req]),
     {reply, ok, State}.
 
 handle_cast(Msg, State) ->
-    ?WARNING("Unexpected cast: ~p", [Msg]),
+    ?WARN("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?WARNING("Unexpected info: ~p", [Info]),
+    ?WARN("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -184,18 +188,18 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal funcs
 %%--------------------------------------------------------------------
 
-do_start_driver(Type, Name, Opts)
+do_start_driver(Type, Opts)
   when Type =:= python2;
        Type =:= python3 ->
     NOpts = resovle_search_path(python, Opts),
     python:start_link([{python, atom_to_list(Type)} | NOpts]);
 
-do_start_driver(Type, Name, Opts)
+do_start_driver(Type, Opts)
   when Type =:= java ->
     NOpts = resovle_search_path(java, Opts),
     python:start_link([{java, atom_to_list(Type)} | NOpts]);
 
-do_start_driver(Type, _, _) ->
+do_start_driver(Type, _) ->
     {error, {invalid_driver_type, Type}}.
 
 do_stop_drviver(DriverPid) ->
@@ -243,9 +247,6 @@ pathsep() ->
 module(python2) -> python;
 module(python3) -> python;
 module(java) -> java.
-
-call(Req) ->
-    gen_server:call(?SERVER, Req).
 
 reply(Term, State) ->
     {reply, Term, State}.

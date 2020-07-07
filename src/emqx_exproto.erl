@@ -14,7 +14,7 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_extension_proto).
+-module(emqx_exproto).
 
 -compile({no_auto_import, [register/1]}).
 
@@ -34,6 +34,8 @@
         , publish/2
         , subscribe/3
         ]).
+
+-type(pmessage() :: any()).
 
 %%--------------------------------------------------------------------
 %% APIs
@@ -76,7 +78,7 @@ register(Conn, ClientInfo0) ->
 publish(Conn, PMsg) when is_pid(Conn), is_list(PMsg) ->
     case parse_pmessage(PMsg) of
         {ok, Msg} ->
-            emqx:publish(Msg), ok;
+            emqx_exproto_conn:call(Conn, {publish, Msg});
         {error, Reason} ->
             {error, Reason}
     end.
@@ -99,7 +101,7 @@ subscribe(Conn, Topic, SubOpts0)
 
 start_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
-    {value, {_, DriverOpts}, LisOpts} = lists:keytake(driver, 1, Options),
+    {value, {_, DriverOpts}, LisOpts} = lists:keytake(driver, 1, Opts),
     case emqx_exproto_driver_mngr:ensuer_driver(Name, DriverOpts) of
         {ok, DriverPid}->
             case start_listener(LisType, Name, ListenOn, [{driver_pid, DriverPid} |LisOpts]) of
@@ -112,13 +114,13 @@ start_listener({Proto, LisType, ListenOn, Opts}) ->
                     error(Reason)
             end;
         {error, Reason} ->
-            io:format(standard_error, "Failed to start ~s driver for ~s - ~0p~n!",
-                      [DriverName, Name, Reason]),
+            io:format(standard_error, "Failed to start ~s's driver - ~0p~n!",
+                      [Name, Reason]),
             error(Reason)
     end.
 
 %% @private
-start_listener(LisType, Name, ListenOn, LisOpts) 
+start_listener(LisType, Name, ListenOn, LisOpts)
   when LisType =:= tcp;
        LisType =:= ssl ->
     SockOpts = esockd:parse_opt(LisOpts),
@@ -133,7 +135,7 @@ start_listener(udp, Name, ListenOn, LisOpts) ->
 start_listener(dtls, Name, ListenOn, LisOpts) ->
     SockOpts = esockd:parse_opt(LisOpts),
     esockd:open_dtls(Name, ListenOn, merge_udp_default(SockOpts),
-                    {emqx_exproto_conn, start_link, [LisOpts-- SockOpts]});
+                    {emqx_exproto_conn, start_link, [LisOpts-- SockOpts]}).
 
 stop_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
@@ -176,3 +178,15 @@ merge_udp_default(Opts) ->
         false ->
             [{udp_options, ?UDP_SOCKOPTS} | Opts]
     end.
+
+%%--------------------------------------------------------------------
+%% Convertor
+
+parse_clientinfo(_Info) ->
+    todo.
+
+parse_pmessage(_Msg) ->
+    todo.
+
+parse_subopts(_Opts) ->
+    todo.

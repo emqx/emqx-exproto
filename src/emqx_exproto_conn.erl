@@ -17,15 +17,10 @@
 %% TCP/TLS/UDP/DTLS Connection
 -module(emqx_exproto_conn).
 
-
+-include_lib("emqx/include/types.hrl").
 -include_lib("emqx/include/logger.hrl").
 
-%-include("emqx.hrl").
-%-include("emqx_mqtt.hrl").
-%-include("logger.hrl").
-%-include("types.hrl").
-
--logger_header("[MQTT]").
+-logger_header("[ExProto Conn]").
 
 %% API
 -export([ start_link/3
@@ -51,9 +46,6 @@
 %% Internal callback
 -export([wakeup_from_hib/2]).
 
-%% Export for CT
--export([set_field/3]).
-
 -import(emqx_misc,
         [ maybe_apply/2
         , start_timer/2
@@ -70,6 +62,8 @@
           sockstate :: emqx_types:sockstate(),
           %% The {active, N} option
           active_n :: pos_integer(),
+          %% Send function
+          sendfun :: function(),
           %% Limiter
           limiter :: maybe(emqx_limiter:limiter()),
           %% Limit Timer
@@ -99,13 +93,13 @@
 
 -define(ENABLED(X), (X =/= undefined)).
 
--dialyzer({no_match, [info/2]}).
--dialyzer({nowarn_function, [ init/4
-                            , init_state/3
-                            , run_loop/2
-                            , system_terminate/4
-                            ]}).
-
+%-dialyzer({no_match, [info/2]}).
+%-dialyzer({nowarn_function, [ init/4
+%                            , init_state/2
+%                            , run_loop/2
+%                            , system_terminate/4
+%                            ]}).
+%
 %% FIXME: fixme here
 -spec(start_link(esockd:transport(), esockd:socket(), proplists:proplist())
       -> {ok, pid()}).
@@ -141,8 +135,8 @@ info(State = #state{channel = Channel}) ->
 
 info(Keys, State) when is_list(Keys) ->
     [{Key, info(Key, State)} || Key <- Keys];
-info(socktype, #state{transport = Transport, socket = Socket}) ->
-    Transport:type(Socket);
+info(socktype, #state{socket = Socket}) ->
+    esockd_type(Socket);
 info(peername, #state{peername = Peername}) ->
     Peername;
 info(sockname, #state{sockname = Sockname}) ->
@@ -158,14 +152,12 @@ info(limit_timer, #state{limit_timer = LimitTimer}) ->
 info(limiter, #state{limiter = Limiter}) ->
     maybe_apply(fun emqx_limiter:info/1, Limiter).
 
-%% @doc Get stats of the connection/channel.
 -spec(stats(pid()|state()) -> emqx_types:stats()).
 stats(CPid) when is_pid(CPid) ->
     call(CPid, stats);
-stats(#state{transport = Transport,
-             socket    = Socket,
-             channel   = Channel}) ->
-    SockStats = case Transport:getstat(Socket, ?SOCK_STATS) of
+stats(#state{socket  = Socket,
+             channel = Channel}) ->
+    SockStats = case esockd_getstat(Socket, ?SOCK_STATS) of
                     {ok, Ss}   -> Ss;
                     {error, _} -> []
                 end,
@@ -183,6 +175,7 @@ stop(Pid) ->
 %%--------------------------------------------------------------------
 %% Wrapped funcs
 %%--------------------------------------------------------------------
+
 esockd_wait(Socket = {udp, _SockPid, _Sock}) ->
     {ok, Socket};
 esockd_wait({esockd_transport, Sock}) ->
@@ -196,7 +189,7 @@ esockd_close({udp, _SockPid, Sock}) ->
 esockd_close({esockd_transport, Sock}) ->
     esockd_transport:fast_close(Sock).
 
-esockd_ensure_ok_or_exit(peercert, [{udp, _SockPid, Sock}]) ->
+esockd_ensure_ok_or_exit(peercert, [{udp, _SockPid, _Sock}]) ->
     nossl;
 esockd_ensure_ok_or_exit(Fun, [{udp, _SockPid, Sock}]) ->
     esockd_transport:ensure_ok_or_exit(Fun, Sock);
@@ -214,9 +207,16 @@ esockd_setopts({esockd_transport, Socket}, Opts) ->
     %% FIXME: DTLS works??
     esockd_transport:setopts(Socket, Opts).
 
+esockd_getstat({udp, _SockPid, Sock}, Stats) ->
+    inet:getstat(Sock, Stats);
+esockd_getstat({esockd_transport, Sock}, Stats) ->
+    esockd_transport:getstat(Sock, Stats).
+
+
+
 sendfun({udp, _SockPid, Sock}, {Ip, Port}) ->
     fun(Data) ->
-        gen_udp:send(Sock, Ip, Port, Data);
+        gen_udp:send(Sock, Ip, Port, Data)
     end;
 sendfun({esockd_transport, Sock}, _) ->
     fun(Data) ->
@@ -260,7 +260,6 @@ init_state(WrappedSock, Options) ->
 
     GcState = emqx_gc:init(?DEFAULT_GC_OPTS),
 
-    %StatsTimer = emqx_zone:stats_timer(Zone),
     IdleTimeout = proplists:get_value(idle_timeout, Options, ?DEFAULT_IDLE_TIMEOUT),
     IdleTimer = start_timer(IdleTimeout, idle_timeout),
     #state{socket       = WrappedSock,
@@ -272,14 +271,13 @@ init_state(WrappedSock, Options) ->
            limiter      = Limiter,
            channel      = Channel,
            gc_state     = GcState,
-           %stats_timer  = StatsTimer,
+           stats_timer  = disabled,
            idle_timeout = IdleTimeout,
            idle_timer   = IdleTimer
           }.
 
 run_loop(Parent, State = #state{socket   = Socket,
-                                peername = Peername,
-                                channel  = Channel}) ->
+                                peername = Peername}) ->
     emqx_logger:set_metadata_peername(esockd:format(Peername)),
     emqx_misc:tune_heap_size(?DEFAULT_OOM_POLICY),
     case activate_socket(State) of
@@ -561,8 +559,8 @@ with_channel(Fun, Args, State = #state{channel = Channel}) ->
 %%--------------------------------------------------------------------
 %% Handle outgoing packets
 
-handle_outgoing(Data, State) ->
-    ?LOG(debug, "SEND ~0p", [Data]),
+handle_outgoing(IoData, #state{socket = Socket, sendfun = SendFun}) ->
+    ?LOG(debug, "SEND ~0p", [IoData]),
 
     Oct = iolist_size(IoData),
 
@@ -629,8 +627,9 @@ run_gc(Stats, State = #state{gc_state = GcSt}) ->
             State#state{gc_state = GcSt1}
     end.
 
-check_oom(State = #state{channel = Channel}) ->
-    case ?ENABLED(OomPolicy) andalso emqx_misc:check_oom(?DEFAULT_OOM_POLICY) of
+check_oom(State) ->
+    OomPolicy = ?DEFAULT_OOM_POLICY,
+    case ?ENABLED(OomPolicy) andalso emqx_misc:check_oom(OomPolicy) of
         Shutdown = {shutdown, _Reason} ->
             erlang:send(self(), Shutdown);
         _Other -> ok
@@ -666,8 +665,6 @@ close_socket(State = #state{socket = Socket}) ->
 %% Helper functions
 
 -compile({inline, [next_msgs/1]}).
-next_msgs(Packet) when is_record(Packet, mqtt_packet) ->
-    {outgoing, Packet};
 next_msgs(Event) when is_tuple(Event) ->
     Event;
 next_msgs(More) when is_list(More) ->

@@ -18,6 +18,11 @@
   {datatype, string}
 ]}.
 
+{mapping, "exproto.listener.$proto.driver_callback_module", "emqx_exproto.listeners", [
+  {default, "main"},
+  {datatype, string}
+]}.
+
 {mapping, "exproto.listener.$proto.acceptors", "emqx_exproto.listeners", [
   {default, 8},
   {datatype, integer}
@@ -35,6 +40,11 @@
 {mapping, "exproto.listener.$proto.active_n", "emqx_exproto.listeners", [
   {default, 100},
   {datatype, integer}
+]}.
+
+{mapping, "exproto.listener.$proto.idle_timeout", "emqx_exproto.listeners", [
+  {default, "30s"},
+  {datatype, {duration, ms}}
 ]}.
 
 {mapping, "exproto.listener.$proto.rate_limit", "emqx_exproto.listeners", [
@@ -142,7 +152,9 @@
 
     DriverOpts = fun(Prefix) ->
                      Filter([{type, cuttlefish:conf_get(Prefix ++ ".driver", Conf)},
-                             {path, cuttlefish:conf_get(Prefix ++ ".driver_search_path", Conf)}])
+                             {path, cuttlefish:conf_get(Prefix ++ ".driver_search_path", Conf)},
+                             {cbm, Atom(cuttlefish:conf_get(Prefix ++ ".driver_callback_module", Conf))}
+                            ])
                  end,
 
     LisOpts = fun(Prefix) ->
