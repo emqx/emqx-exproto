@@ -16,6 +16,7 @@
 
 -module(emqx_exproto_channel).
 
+-include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/types.hrl").
 -include_lib("emqx/include/logger.hrl").
 
@@ -40,8 +41,9 @@
 -record(channel, {
           %% Driver
           driver :: emqx_exproto_driver_mnger:driver(),
-          %% Socket connInfo
+          %% Conn info
           conninfo :: emqx_types:conninfo(),
+          %% Client info
           %% Client info from `register` function
           clientinfo :: maybe(map()),
           %% Connection state
@@ -106,12 +108,16 @@ stats(_Channel) ->
 %%--------------------------------------------------------------------
 
 -spec(init(emqx_types:conninfo(), proplists:proplist()) -> channel()).
-init(ConnInfo = #{peername := {PeerHost, _Port},
-                  sockname := {_Host, SockPort}}, Options) ->
-    %% 1. call driver:init(conn(), conninfo())
-    %% 2. got a state()
-    %% 3. return the channel_state()
-    #channel{driver = todo, state = todo, conninfo = todo}.
+init(ConnInfo, Options) ->
+    {ok, Driver} = emqx_exproto_driver_mngr:lookup(proplists:get_value(driver, Options)),
+    case cb_init(ConnInfo, Driver) of
+        {ok, DState} ->
+            NConnInfo = default_conninfo(ConnInfo),
+            ClientInfo = default_clientinfo(ConnInfo),
+            #channel{driver = Driver, state = DState, conninfo = NConnInfo, clientinfo = ClientInfo};
+        {error, Reason} ->
+            exit({init_channel_failed, Reason})
+    end.
 
 %%--------------------------------------------------------------------
 %% Handle incoming packet
@@ -121,20 +127,24 @@ init(ConnInfo = #{peername := {PeerHost, _Port},
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_in(Data, Channel) ->
-    %% 1. dispath data to driver
-    %% 2. save new driver state
-    %% 3. return updated channel
-    {ok, Channel#channel{state = newstate}}.
+    case cb_recevied(Data, Channel) of
+        {ok, NChannel} ->
+            {ok, NChannel};
+        {error, Reason} ->
+            {shutdown, Reason, Channel}
+    end.
 
 -spec(handle_deliver(list(emqx_types:deliver()), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_deliver(Delivers, Channel) ->
     %% TODO: ?? Nack delivers from shared subscription
-    %% 1. dispath data to driver
-    %% 2. save new driver state
-    %% 3. return updated channel
-    {ok, Channel#channel{state = newstate}}.
+    case cb_deliver(Delivers, Channel) of
+        {ok, NChannel} ->
+            {ok, NChannel};
+        {error, Reason} ->
+            {shutdown, Reason, Channel}
+    end.
 
 -spec(handle_timeout(reference(), Msg :: term(), channel())
       -> {ok, channel()}
@@ -146,20 +156,27 @@ handle_timeout(_TRef, Msg, Channel) ->
 -spec(handle_call(any(), channel())
      -> {reply, Reply :: term(), channel()}
       | {shutdown, Reason :: term(), Reply :: term(), channel()}).
-handle_call({register, ClientInfo}, Channel) ->
-    %% 1. Register clientid and evict client used same clientid
-    %% 2. Return new Channel
-    {reply, ok, Channel#channel{clientinfo = ClientInfo}};
+handle_call({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
+                                                        clientinfo = ClientInfo}) ->
+    NConnInfo = enrich_conninfo(ClientInfo0, ConnInfo),
+    NClientInfo = enrich_clientinfo(ClientInfo0, ClientInfo),
+    case emqx_cm:open_session(true, ClientInfo) of
+        {ok, _Session} ->
+            {reply, ok, Channel#channel{conninfo = NConnInfo, clientinfo = NClientInfo}};
+        {error, Reason} ->
+            ?ERROR("Register failed, reason: ~p", [Reason]),
+            {shutdown, Reason, Channel}
+    end;
 
-handle_call({subscribe, _Topic, _SubOpts}, Channel) ->
-    %% 1. Execute subscribe operation
-    %% 2. Save the subscription??
-    %% 3. Return new channel
-    {reply, ok, Channel};
+handle_call({subscribe, Topic0, Qos}, Channel = #channel{subscription = Subs}) ->
+    {Topic, Opts} = emqx_topic:parse(Topic0),
+    SubOpts = Opts#{qos => Qos},
+    emqx:subscribe(Topic, SubOpts),
+    {reply, ok, Channel#channel{subscription = Subs#{Topic => SubOpts}}};
 
-handle_call({publish, Msg}, Channel) ->
-    %% 1. Execute publish operation
-    %% 2. Return new channel
+handle_call({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
+    NMsg = enrich_msg_from(ClientInfo, Msg),
+    emqx:publish(NMsg),
     {reply, ok, Channel};
 
 handle_call(Req, Channel) ->
@@ -169,36 +186,40 @@ handle_call(Req, Channel) ->
 -spec(handle_info(any(), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
-handle_info(_Info, _Channel) ->
+handle_info(Info, _Channel) ->
+    ?WARN("Unexpected info: ~p", [Info]),
     ok.
 
 -spec(terminate(any(), channel()) -> ok).
-terminate(_Reason, _Channel) ->
-    ok.
+terminate(Reason, Channel) ->
+    cb_terminated(Reason, Channel), ok.
 
 %%--------------------------------------------------------------------
 %% Cbs for driver
 %%--------------------------------------------------------------------
 
-cb_init(Channel = #channel{conninfo = ConnInfo}) ->
-    Args = [self(), format(ConnInfo)],
-    do_call_cb('init', Args, Channel).
+cb_init(ConnInfo, Driver) ->
+    Args = [self(), emqx_exproto_types:serialize(conninfo, ConnInfo)],
+    emqx_exproto_driver_mnger:call(Driver, {'init', Args}).
 
 cb_recevied(Data, Channel = #channel{state = DState}) ->
     Args = [self(), Data, DState],
     do_call_cb('recevied', Args, Channel).
 
 cb_terminated(Reason, Channel = #channel{state = DState}) ->
-    Args = [self(), format(Reason), DState],
+    Args = [self(), stringfy(Reason), DState],
     do_call_cb('terminated', Args, Channel).
 
 cb_deliver(Delivers, Channel = #channel{state = DState}) ->
-    Args = [self(), format(Delivers), DState],
+    Msgs = [emqx_exproto_types:serialize(message, Msg) || {_, _, Msg} <- Delivers],
+    Args = [self(), Msgs, DState],
     do_call_cb('deliver', Args, Channel).
 
 %% @private
 do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
     case emqx_exproto_driver_mnger:call(D, {Fun, Args}) of
+        {ok, ok} ->
+            {ok, Channel};
         {ok, NDState} ->
             {ok, Channel#channel{state = NDState}};
         {error, Reason} ->
@@ -209,4 +230,49 @@ do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
 %% Format
 %%--------------------------------------------------------------------
 
-format(T) -> T.
+enrich_msg_from(ClientInfo, Msg) ->
+    case maps:get(clientid, ClientInfo, undefined) of
+        undefined -> Msg;
+        ClientId -> Msg#message{from = ClientId}
+    end.
+
+enrich_conninfo(InClientInfo, ConnInfo) ->
+    maps:merge(ConnInfo, maps:with([proto_name, proto_ver, clientid, username, keepalive], InClientInfo)).
+
+enrich_clientinfo(InClientInfo = #{proto_name := ProtoName}, ClientInfo) ->
+    NClientInfo = maps:merge(ClientInfo, maps:with([clientid, username, mountpoint], InClientInfo)),
+    NClientInfo#{protocol => lowcase_atom(ProtoName)}.
+
+default_conninfo(ConnInfo) ->
+    ConnInfo#{proto_name => undefined,
+              proto_ver => undefined,
+              clean_start => true,
+              clientid => undefined,
+              username => undefined,
+              conn_props => [],
+              connected => true,
+              connected_at => erlang:system_time(millisecond),
+              keepalive => undefined,
+              receive_maximum => 0,
+              expiry_interval => 0}.
+
+default_clientinfo(#{peername := {PeerHost, _},
+                      sockname := {_, SockPort}}) ->
+    #{zone         => undefined,
+      protocol     => undefined,
+      peerhost     => PeerHost,
+      sockport     => SockPort,
+      clientid     => undefined,
+      username     => undefined,
+      is_bridge    => false,
+      is_superuser => false,
+      mountpoint   => undefined}.
+
+stringfy(Reason) ->
+    unicode:characters_to_binary((io_lib:format("~0p", [Reason]))).
+
+lowcase_atom(undefined) ->
+    undefined;
+lowcase_atom(S) ->
+    atom_to_binary(string:lowcase(S), utf8).
+

@@ -35,8 +35,6 @@
         , subscribe/3
         ]).
 
--type(pmessage() :: any()).
-
 %%--------------------------------------------------------------------
 %% APIs
 %%--------------------------------------------------------------------
@@ -67,33 +65,27 @@ close(Conn) when is_pid(Conn) ->
 
 -spec(register(pid(), list()) -> ok | {error, any()}).
 register(Conn, ClientInfo0) ->
-    case parse_clientinfo(ClientInfo0) of
-        {ok, ClientInfo} ->
-            emqx_exproto_conn:call(Conn, {register, ClientInfo});
+    case emqx_exproto_types:parse(clientinfo, ClientInfo0) of
         {error, Reason} ->
-            {error, Reason}
+            {error, Reason};
+        ClientInfo ->
+            emqx_exproto_conn:call(Conn, {register, ClientInfo})
     end.
 
--spec(publish(pid(), pmessage()) -> ok | {error, any()}).
-publish(Conn, PMsg) when is_pid(Conn), is_list(PMsg) ->
-    case parse_pmessage(PMsg) of
-        {ok, Msg} ->
-            emqx_exproto_conn:call(Conn, {publish, Msg});
+-spec(publish(pid(), list()) -> ok | {error, any()}).
+publish(Conn, Msg0) when is_pid(Conn), is_list(Msg0) ->
+    case emqx_exproto_types:parse(message, Msg0) of
         {error, Reason} ->
-            {error, Reason}
+            {error, Reason};
+        Msg ->
+            emqx_exproto_conn:call(Conn, {publish, Msg})
     end.
 
--spec(subscribe(pid(), binary(), list()) -> ok | {error, any()}).
-subscribe(Conn, Topic, SubOpts0)
-  when is_pid(Conn),
-       is_binary(Topic),
-       is_list(SubOpts0) ->
-    case parse_subopts(SubOpts0) of
-        {ok, SubOpts} ->
-            emqx_exproto_conn:call(Conn, {subscribe, Topic, SubOpts});
-        {error, Reason} ->
-            {error, Reason}
-    end.
+-spec(subscribe(pid(), binary(), emqx_types:qos()) -> ok | {error, any()}).
+subscribe(Conn, Topic, Qos)
+  when is_pid(Conn), is_binary(Topic),
+       (Qos =:= 0 andalso Qos =:=1 andalso Qos =:=2) ->
+    emqx_exproto_conn:call(Conn, {subscribe, Topic, Qos}).
 
 %%--------------------------------------------------------------------
 %% Internal functions
@@ -103,8 +95,8 @@ start_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
     {value, {_, DriverOpts}, LisOpts} = lists:keytake(driver, 1, Opts),
     case emqx_exproto_driver_mngr:ensuer_driver(Name, DriverOpts) of
-        {ok, DriverPid}->
-            case start_listener(LisType, Name, ListenOn, [{driver_pid, DriverPid} |LisOpts]) of
+        {ok, _DriverPid}->
+            case start_listener(LisType, Name, ListenOn, [{driver, Name} |LisOpts]) of
                 {ok, _} ->
                     io:format("Start ~s listener on ~s successfully.~n",
                               [Name, format(ListenOn)]);
@@ -178,15 +170,3 @@ merge_udp_default(Opts) ->
         false ->
             [{udp_options, ?UDP_SOCKOPTS} | Opts]
     end.
-
-%%--------------------------------------------------------------------
-%% Convertor
-
-parse_clientinfo(_Info) ->
-    todo.
-
-parse_pmessage(_Msg) ->
-    todo.
-
-parse_subopts(_Opts) ->
-    todo.

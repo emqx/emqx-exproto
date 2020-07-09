@@ -68,10 +68,6 @@
           limiter :: maybe(emqx_limiter:limiter()),
           %% Limit Timer
           limit_timer :: maybe(reference()),
-          %% Parse State
-          %%parse_state :: emqx_frame:parse_state(),
-          %% Serialize function
-          %%serialize :: emqx_frame:serialize_fun(),
           %% Channel State
           channel :: emqx_exproto_channel:channel(),
           %% GC State
@@ -251,7 +247,6 @@ init_state(WrappedSock, Options) ->
                  conn_mod => ?MODULE
                 },
 
-    %Zone = proplists:get_value(zone, Options),
     ActiveN = proplists:get_value(active_n, Options, ?ACTIVE_N),
 
     Limiter = emqx_limiter:init(Options),
@@ -281,7 +276,8 @@ run_loop(Parent, State = #state{socket   = Socket,
     emqx_logger:set_metadata_peername(esockd:format(Peername)),
     emqx_misc:tune_heap_size(?DEFAULT_OOM_POLICY),
     case activate_socket(State) of
-        {ok, NState} -> hibernate(Parent, NState);
+        {ok, NState} ->
+            hibernate(Parent, NState);
         {error, Reason} ->
             ok = esockd_close(Socket),
             exit_on_sock_error(Reason)
