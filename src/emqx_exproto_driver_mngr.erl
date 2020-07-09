@@ -63,7 +63,7 @@
 
 -type driver_module() :: python | java.
 
--type fargs() :: {function(), list()}.
+-type fargs() :: {atom(), list()}.
 
 %%--------------------------------------------------------------------
 %% APIs
@@ -78,8 +78,9 @@ start_link() ->
 
 -spec(ensure_driver(driver_name(), list()) -> {ok, pid()} | {error, any()}).
 ensure_driver(Name, Opts) ->
-    {value, {_, Type}, NOpts} = lists:keytake(type, 1, Opts),
-    gen_server:call(?SERVER, {ensure, {Type, Name, NOpts}}).
+    {value, {_, Type}, Opts1} = lists:keytake(type, 1, Opts),
+    {value, {_, Cbm},  Opts2} = lists:keytake(cbm, 1, Opts1),
+    gen_server:call(?SERVER, {ensure, {Type, Name, Cbm, Opts2}}).
 
 -spec(stop_drivers() -> ok).
 stop_drivers() ->
@@ -93,7 +94,7 @@ stop_driver(Name) ->
 %% APIs - Drivers
 %%--------------------------------------------------------------------
 
--spec(lookup(driver_name()) -> {ok, pid()} | {error, any()}).
+-spec(lookup(driver_name()) -> {ok, driver()} | {error, any()}).
 lookup(Name) ->
     case catch persistent_term:get({?MODULE, Name}) of
         {'EXIT', {badarg, _}} -> {error, not_found};
@@ -128,14 +129,14 @@ do_call(Mod, Pid, Cbm, {F, Args}) ->
 init([]) ->
     {ok, #{drivers => []}}.
 
-handle_call({ensure, {Type, Name, Opts}}, _From, State = #{drivers := Drivers}) ->
+handle_call({ensure, {Type, Name, Cbm, Opts}}, _From, State = #{drivers := Drivers}) ->
     case lists:keyfind(Name, 1, Drivers) of
         false ->
             case do_start_driver(Type, Opts) of
                 {ok, Pid} ->
                     Driver = #{name => Name,
                                module => module(Type),
-                               cbm => proplists:get_value(cbm, Opts, ?DEFAULT_CBM),
+                               cbm => Cbm,
                                pid => Pid,
                                opts => Opts},
                     ok = save(Name, Driver),
@@ -149,9 +150,9 @@ handle_call({ensure, {Type, Name, Opts}}, _From, State = #{drivers := Drivers}) 
 
 handle_call(stop_all, _From, State = #{drivers := Drivers}) ->
     lists:foreach(
-      fun({Name, Pid}) ->
+      fun({Name, #{pid := Pid}}) ->
         _ = do_stop_drviver(Pid),
-        ok = erase(Name)
+        _ = erase(Name)
       end, Drivers),
     reply(ok, State#{drivers => []});
 
@@ -159,9 +160,9 @@ handle_call({stop, Name}, _From, State = #{drivers := Drivers}) ->
     case lists:keyfind(Name, 1, Drivers) of
         false ->
             reply({error, not_found}, State);
-        {_, Pid} ->
+        {_, #{pid := Pid}} ->
             _ = do_stop_drviver(Pid),
-            ok = erase(Name),
+            _ = erase(Name),
             reply(ok, State#{drivers => Drivers -- [{Name, Pid}]})
     end;
 
@@ -197,7 +198,7 @@ do_start_driver(Type, Opts)
 do_start_driver(Type, Opts)
   when Type =:= java ->
     NOpts = resovle_search_path(java, Opts),
-    python:start_link([{java, atom_to_list(Type)} | NOpts]);
+    java:start_link([{java, atom_to_list(Type)} | NOpts]);
 
 do_start_driver(Type, _) ->
     {error, {invalid_driver_type, Type}}.
@@ -206,14 +207,20 @@ do_stop_drviver(DriverPid) ->
     erlport:stop(DriverPid).
 %% @private
 resovle_search_path(java, Opts) ->
-    case proplists:get_value(java_path, Opts) of
-        undefined -> Opts;
-        Path ->
+    case lists:keytake(path, 1, Opts) of
+        false -> Opts;
+        {value, {_, Path}, NOpts} ->
             Solved = lists:flatten(
                        lists:join(pathsep(),
                                   [expand_jar_packages(filename:absname(P))
                                    || P <- re:split(Path, pathsep(), [{return, list}]), P /= ""])),
-            lists:keystore(java_path, 1, Opts, {java_path, Solved})
+            [{java_path, Solved} | NOpts]
+    end;
+resovle_search_path(python, Opts) ->
+    case lists:keytake(path, 1, Opts) of
+        false -> Opts;
+        {value, {_, Path}, NOpts} ->
+            [{python_path, Path} | NOpts]
     end;
 resovle_search_path(_, Opts) ->
     Opts.
@@ -251,8 +258,8 @@ module(java) -> java.
 reply(Term, State) ->
     {reply, Term, State}.
 
-save(Name, {Type, Pid}) ->
-    persistent_term:put({?MODULE, Name}, {Type, Pid}).
+save(Name, Driver) ->
+    persistent_term:put({?MODULE, Name}, Driver).
 
 erase(Name) ->
     persistent_term:erase({?MODULE, Name}).

@@ -20,10 +20,16 @@
 
 -plugin(extension).
 
--export([start/2, stop/1]).
+-export([start/2, prep_stop/1, stop/1]).
 
 start(_StartType, _StartArgs) ->
-    emqx_exproto_sup:start_link().
+    {ok, Sup} = emqx_exproto_sup:start_link(),
+    emqx_exproto:start_listeners(),
+    {ok, Sup}.
+
+prep_stop(State) ->
+    emqx_exproto:stop_listeners(),
+    State.
 
 stop(_State) ->
     ok.

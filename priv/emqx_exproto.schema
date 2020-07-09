@@ -151,10 +151,12 @@
                 end,
 
     DriverOpts = fun(Prefix) ->
-                     Filter([{type, cuttlefish:conf_get(Prefix ++ ".driver", Conf)},
-                             {path, cuttlefish:conf_get(Prefix ++ ".driver_search_path", Conf)},
-                             {cbm, Atom(cuttlefish:conf_get(Prefix ++ ".driver_callback_module", Conf))}
-                            ])
+                     [{driver,
+                       Filter([{type, cuttlefish:conf_get(Prefix ++ ".driver", Conf)},
+                               {path, cuttlefish:conf_get(Prefix ++ ".driver_search_path", Conf)},
+                               {cbm, Atom(cuttlefish:conf_get(Prefix ++ ".driver_callback_module", Conf))}
+                              ])
+                      }]
                  end,
 
     LisOpts = fun(Prefix) ->
@@ -280,11 +282,11 @@
 
     ParseListenOn = fun(ListenOn) ->
                         case string:tokens(ListenOn, "://") of
-                            [Port] -> {tcp, Port};
+                            [Port] -> {tcp, list_to_integer(Port)};
                             [T, Ip, Port]
                               when T =:= "tcp"; T =:= "ssl";
                                    T =:= "udp"; T =:= "dtls" ->
-                                {Atom(T), {Ip, Port}}
+                                {Atom(T), {Ip, list_to_integer(Port)}}
                         end
                     end,
 

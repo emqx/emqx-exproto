@@ -39,5 +39,5 @@ rebar.lock
 xrefr
 erlang.mk
 *.coverdata
-etc/emqx.conf.rendered
+etc/emqx_exproto.conf.rendered
 Mnesia.*/

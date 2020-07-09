@@ -20,6 +20,9 @@ eunit: compile
 xref:
 	$(REBAR) xref
 
+dialyzer:
+	$(REBAR) dialyzer
+
 cover:
 	$(REBAR) cover
 

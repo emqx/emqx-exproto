@@ -84,7 +84,7 @@ publish(Conn, Msg0) when is_pid(Conn), is_list(Msg0) ->
 -spec(subscribe(pid(), binary(), emqx_types:qos()) -> ok | {error, any()}).
 subscribe(Conn, Topic, Qos)
   when is_pid(Conn), is_binary(Topic),
-       (Qos =:= 0 andalso Qos =:=1 andalso Qos =:=2) ->
+       (Qos =:= 0 orelse Qos =:= 1 orelse Qos =:= 2) ->
     emqx_exproto_conn:call(Conn, {subscribe, Topic, Qos}).
 
 %%--------------------------------------------------------------------
@@ -94,7 +94,7 @@ subscribe(Conn, Topic, Qos)
 start_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
     {value, {_, DriverOpts}, LisOpts} = lists:keytake(driver, 1, Opts),
-    case emqx_exproto_driver_mngr:ensuer_driver(Name, DriverOpts) of
+    case emqx_exproto_driver_mngr:ensure_driver(Name, DriverOpts) of
         {ok, _DriverPid}->
             case start_listener(LisType, Name, ListenOn, [{driver, Name} |LisOpts]) of
                 {ok, _} ->
@@ -131,7 +131,7 @@ start_listener(dtls, Name, ListenOn, LisOpts) ->
 
 stop_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
-    _ = emqx_exproto_driver_mnagr:stop_driver(Name),
+    _ = emqx_exproto_driver_mngr:stop_driver(Name),
     StopRet = stop_listener(LisType, Name, ListenOn, Opts),
     case StopRet of
         ok -> io:format("Stop ~s listener on ~s successfully.~n",
@@ -148,7 +148,7 @@ stop_listener(_LisType, Name, ListenOn, _Opts) ->
 
 %% @private
 name(Proto, LisType) ->
-    list_to_atom(io_lib:format("~s:~s", [Proto, LisType])).
+    list_to_atom(lists:flatten(io_lib:format("~s:~s", [Proto, LisType]))).
 
 %% @private
 format({Addr, Port}) when is_list(Addr) ->

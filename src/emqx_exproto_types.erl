@@ -40,6 +40,8 @@
                      , conn_mod := atom()
                      }).
 
+-export_type([conninfo/0, clientinfo/0]).
+
 -define(UP_DATA_SCHEMA_CLIENTINFO, 
             [ {proto_name, optional, binary}
             , {proto_ver, optional, [integer, binary]}
@@ -131,7 +133,7 @@ do_parsing(Schema, Params) ->
 do_parsing([], _Params, Acc) ->
     lists:reverse(Acc);
 do_parsing([Indictor = {Key, _Optional, Type} | More], Params, Acc) ->
-    Value = case proplist:get_value(Key, Params) of
+    Value = case get_value(Key, Params) of
                 undefined -> do_generating(Indictor);
                 InParam -> do_typing(Key, InParam, Type)
             end,

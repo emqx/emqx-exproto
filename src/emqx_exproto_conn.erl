@@ -46,10 +46,7 @@
 %% Internal callback
 -export([wakeup_from_hib/2]).
 
--import(emqx_misc,
-        [ maybe_apply/2
-        , start_timer/2
-        ]).
+-import(emqx_misc, [start_timer/2]).
 
 -record(state, {
           %% TCP/SSL/UDP/DTLS Wrapped Socket
@@ -89,16 +86,9 @@
 
 -define(ENABLED(X), (X =/= undefined)).
 
-%-dialyzer({no_match, [info/2]}).
-%-dialyzer({nowarn_function, [ init/4
-%                            , init_state/2
-%                            , run_loop/2
-%                            , system_terminate/4
-%                            ]}).
-%
-%% FIXME: fixme here
--spec(start_link(esockd:transport(), esockd:socket(), proplists:proplist())
-      -> {ok, pid()}).
+-dialyzer({nowarn_function,
+           [ system_terminate/4
+           ]}).
 
 %% udp
 start_link(Socket = {udp, _SockPid, _Sock}, Peername, Options) ->
@@ -140,13 +130,7 @@ info(sockname, #state{sockname = Sockname}) ->
 info(sockstate, #state{sockstate = SockSt}) ->
     SockSt;
 info(active_n, #state{active_n = ActiveN}) ->
-    ActiveN;
-info(stats_timer, #state{stats_timer = StatsTimer}) ->
-    StatsTimer;
-info(limit_timer, #state{limit_timer = LimitTimer}) ->
-    LimitTimer;
-info(limiter, #state{limiter = Limiter}) ->
-    maybe_apply(fun emqx_limiter:info/1, Limiter).
+    ActiveN.
 
 -spec(stats(pid()|state()) -> emqx_types:stats()).
 stats(CPid) when is_pid(CPid) ->
@@ -488,10 +472,6 @@ handle_call(_From, Req, State = #state{channel = Channel}) ->
             {reply, Reply, State#state{channel = NChannel}};
         {shutdown, Reason, Reply, NChannel} ->
             shutdown(Reason, Reply, State#state{channel = NChannel})
-        %{shutdown, Reason, Reply, OutPacket, NChannel} ->
-        %    NState = State#state{channel = NChannel},
-        %    ok = handle_outgoing(OutPacket, NState),
-        %    shutdown(Reason, Reply, NState)
     end.
 
 %%--------------------------------------------------------------------

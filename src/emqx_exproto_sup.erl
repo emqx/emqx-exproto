@@ -30,6 +30,7 @@ init([]) ->
                    start => {emqx_exproto_driver_mngr, start_link, []},
                    restart => permanent,
                    shutdown => 5000,
-                   type => supervisor,
+                   type => worker,
                    modules => [emqx_exproto_driver_mngr]},
     {ok, {{one_for_all, 10, 5}, [DriverMngr]}}.
+

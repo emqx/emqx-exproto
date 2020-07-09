@@ -49,7 +49,7 @@
           %% Connection state
           conn_state :: conn_state(),
           %% Subscription
-          subscription :: map(),
+          subscription = #{},
           %% Driver level state
           state :: any()
          }).
@@ -107,16 +107,24 @@ stats(_Channel) ->
 %% Init the channel
 %%--------------------------------------------------------------------
 
--spec(init(emqx_types:conninfo(), proplists:proplist()) -> channel()).
+-spec(init(emqx_exproto_types:conninfo(), proplists:proplist()) -> channel()).
 init(ConnInfo, Options) ->
-    {ok, Driver} = emqx_exproto_driver_mngr:lookup(proplists:get_value(driver, Options)),
-    case cb_init(ConnInfo, Driver) of
-        {ok, DState} ->
-            NConnInfo = default_conninfo(ConnInfo),
-            ClientInfo = default_clientinfo(ConnInfo),
-            #channel{driver = Driver, state = DState, conninfo = NConnInfo, clientinfo = ClientInfo};
+    case emqx_exproto_driver_mngr:lookup(proplists:get_value(driver, Options)) of
+        {ok, Driver} ->
+            case cb_init(ConnInfo, Driver) of
+                    {ok, DState} ->
+                        NConnInfo = default_conninfo(ConnInfo),
+                        ClientInfo = default_clientinfo(ConnInfo),
+                        #channel{driver = Driver,
+                                 state = DState,
+                                 conninfo = NConnInfo,
+                                 clientinfo = ClientInfo,
+                                 conn_state = connected};
+                    {error, Reason} ->
+                        exit({init_channel_failed, Reason})
+            end;
         {error, Reason} ->
-            exit({init_channel_failed, Reason})
+            exit({lookup_driver_failed, Reason})
     end.
 
 %%--------------------------------------------------------------------
@@ -158,14 +166,15 @@ handle_timeout(_TRef, Msg, Channel) ->
       | {shutdown, Reason :: term(), Reply :: term(), channel()}).
 handle_call({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
                                                         clientinfo = ClientInfo}) ->
-    NConnInfo = enrich_conninfo(ClientInfo0, ConnInfo),
-    NClientInfo = enrich_clientinfo(ClientInfo0, ClientInfo),
-    case emqx_cm:open_session(true, ClientInfo) of
+    ClientInfo1 = maybe_assign_clientid(ClientInfo0),
+    NConnInfo = enrich_conninfo(ClientInfo1, ConnInfo),
+    NClientInfo = enrich_clientinfo(ClientInfo1, ClientInfo),
+    case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
         {ok, _Session} ->
             {reply, ok, Channel#channel{conninfo = NConnInfo, clientinfo = NClientInfo}};
         {error, Reason} ->
             ?ERROR("Register failed, reason: ~p", [Reason]),
-            {shutdown, Reason, Channel}
+            {shutdown, Reason, {error, Reason}, Channel}
     end;
 
 handle_call({subscribe, Topic0, Qos}, Channel = #channel{subscription = Subs}) ->
@@ -186,9 +195,9 @@ handle_call(Req, Channel) ->
 -spec(handle_info(any(), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
-handle_info(Info, _Channel) ->
+handle_info(Info, Channel) ->
     ?WARN("Unexpected info: ~p", [Info]),
-    ok.
+    {ok, Channel}.
 
 -spec(terminate(any(), channel()) -> ok).
 terminate(Reason, Channel) ->
@@ -200,7 +209,7 @@ terminate(Reason, Channel) ->
 
 cb_init(ConnInfo, Driver) ->
     Args = [self(), emqx_exproto_types:serialize(conninfo, ConnInfo)],
-    emqx_exproto_driver_mnger:call(Driver, {'init', Args}).
+    emqx_exproto_driver_mngr:call(Driver, {'init', Args}).
 
 cb_recevied(Data, Channel = #channel{state = DState}) ->
     Args = [self(), Data, DState],
@@ -217,7 +226,7 @@ cb_deliver(Delivers, Channel = #channel{state = DState}) ->
 
 %% @private
 do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
-    case emqx_exproto_driver_mnger:call(D, {Fun, Args}) of
+    case emqx_exproto_driver_mngr:call(D, {Fun, Args}) of
         {ok, ok} ->
             {ok, Channel};
         {ok, NDState} ->
@@ -229,6 +238,14 @@ do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
 %%--------------------------------------------------------------------
 %% Format
 %%--------------------------------------------------------------------
+
+maybe_assign_clientid(ClientInfo) ->
+    case maps:get(clientid, ClientInfo, undefined) of
+        undefined ->
+            ClientInfo#{clientid => emqx_guid:to_base62(emqx_guid:gen())};
+        _ ->
+            ClientInfo
+    end.
 
 enrich_msg_from(ClientInfo, Msg) ->
     case maps:get(clientid, ClientInfo, undefined) of
@@ -274,5 +291,5 @@ stringfy(Reason) ->
 lowcase_atom(undefined) ->
     undefined;
 lowcase_atom(S) ->
-    atom_to_binary(string:lowcase(S), utf8).
+    binary_to_atom(string:lowercase(S), utf8).
 
