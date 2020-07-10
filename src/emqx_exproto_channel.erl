@@ -32,6 +32,7 @@
         , handle_deliver/2
         , handle_timeout/3
         , handle_call/2
+        , handle_cast/2
         , handle_info/2
         , terminate/2
         ]).
@@ -57,6 +58,12 @@
 -opaque(channel() :: #channel{}).
 
 -type(conn_state() :: idle | connecting | connected | disconnected).
+
+-type(reply() :: {outgoing, binary()}
+               | {outgoing, [binary()]}
+               | {close, Reason :: atom()}).
+
+-type(replies() :: emqx_types:packet() | reply() | [reply()]).
 
 -define(INFO_KEYS, [conninfo, conn_state, clientinfo, session, will_msg]).
 
@@ -164,7 +171,21 @@ handle_timeout(_TRef, Msg, Channel) ->
 -spec(handle_call(any(), channel())
      -> {reply, Reply :: term(), channel()}
       | {shutdown, Reason :: term(), Reply :: term(), channel()}).
-handle_call({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
+handle_call(Req, Channel) ->
+    ?WARN("Unexpected call: ~p", [Req]),
+    {reply, ok, Channel}.
+
+-spec(handle_cast(any(), channel())
+     -> {ok, channel()}
+      | {ok, replies(), channel()}
+      | {shutdown, Reason :: term(), channel()}).
+handle_cast({send, Data}, Channel) ->
+    {ok, [{outgoing, Data}], Channel};
+
+handle_cast(close, Channel) ->
+    {ok, [{close, normal}], Channel};
+
+handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
                                                         clientinfo = ClientInfo}) ->
     ClientInfo1 = maybe_assign_clientid(ClientInfo0),
     NConnInfo = enrich_conninfo(ClientInfo1, ConnInfo),
@@ -177,20 +198,20 @@ handle_call({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
             {shutdown, Reason, {error, Reason}, Channel}
     end;
 
-handle_call({subscribe, Topic0, Qos}, Channel = #channel{subscription = Subs}) ->
+handle_cast({subscribe, Topic0, Qos}, Channel = #channel{subscription = Subs}) ->
     {Topic, Opts} = emqx_topic:parse(Topic0),
     SubOpts = Opts#{qos => Qos},
     emqx:subscribe(Topic, SubOpts),
-    {reply, ok, Channel#channel{subscription = Subs#{Topic => SubOpts}}};
+    {ok, Channel#channel{subscription = Subs#{Topic => SubOpts}}};
 
-handle_call({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
+handle_cast({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
     NMsg = enrich_msg_from(ClientInfo, Msg),
     emqx:publish(NMsg),
-    {reply, ok, Channel};
+    {ok, Channel};
 
-handle_call(Req, Channel) ->
+handle_cast(Req, Channel) ->
     ?WARN("Unexpected call: ~p", [Req]),
-    {reply, ok, Channel}.
+    {ok, Channel}.
 
 -spec(handle_info(any(), channel())
       -> {ok, channel()}
@@ -227,7 +248,7 @@ cb_deliver(Delivers, Channel = #channel{state = DState}) ->
 %% @private
 do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
     case emqx_exproto_driver_mngr:call(D, {Fun, Args}) of
-        {ok, ok} ->
+        ok ->
             {ok, Channel};
         {ok, NDState} ->
             {ok, Channel#channel{state = NDState}};

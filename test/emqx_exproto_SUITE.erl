@@ -19,6 +19,10 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
+-include_lib("emqx/include/emqx.hrl").
+
+-define(TCPOPTS, [binary, {active, false}]).
+
 %%--------------------------------------------------------------------
 %% Setups
 %%--------------------------------------------------------------------
@@ -40,7 +44,7 @@ end_per_group(_, _) ->
     emqx_ct_helpers:stop_apps([emqx_exproto]).
 
 set_sepecial_cfg(emqx_exproto) ->
-    Path = emqx_ct_helpers:deps_path(emqx_exproto, "test/scripts"),
+    Path = emqx_ct_helpers:deps_path(emqx_exproto, "example/"),
     Listeners = application:get_env(emqx_exproto, listeners, []),
     Driver =
         case get(grpname) of
@@ -59,5 +63,28 @@ set_sepecial_cfg(_App) ->
 %% Cases
 %%--------------------------------------------------------------------
 
-t_start(_) ->
+t_start_stop(_) ->
     ok.
+
+t_echo(_) ->
+    {ok, Sock} = gen_tcp:connect("127.0.0.1", 7993, ?TCPOPTS),
+
+    %% tcp echo
+    Bin = rand_bytes(),
+    gen_tcp:send(Sock, Bin),
+    {ok, Bin} = gen_tcp:recv(Sock, byte_size(Bin), 5000),
+
+    %% pubsub echo
+    emqx:subscribe(<<"t/#">>),
+    emqx:publish(emqx_message:make(<<"t/dn">>, <<"echo">>)),
+    First = receive {_, _, X} -> X#message.payload end,
+    First = receive {_, _, Y} -> Y#message.payload end,
+
+    gen_tcp:close(Sock).
+
+%%--------------------------------------------------------------------
+%% Utils
+
+rand_bytes() ->
+    crypto:strong_rand_bytes(rand:uniform(256)).
+

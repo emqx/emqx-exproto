@@ -31,7 +31,9 @@
         , stats/1
         ]).
 
--export([call/2]).
+-export([ call/2
+        , cast/2
+        ]).
 
 %% Callback
 -export([init/4]).
@@ -93,7 +95,7 @@
 %% udp
 start_link(Socket = {udp, _SockPid, _Sock}, Peername, Options) ->
     Args = [self(), Socket, Peername, Options],
-    {ok, proc_lib:spawn_link(?MODULE, init, [Args])};
+    {ok, proc_lib:spawn_link(?MODULE, init, Args)};
 
 %% tcp/ssl/dtls
 start_link(esockd_transport, Sock, Options) ->
@@ -101,7 +103,7 @@ start_link(esockd_transport, Sock, Options) ->
     case esockd_transport:peername(Sock) of
         {ok, Peername} ->
             Args = [self(), Socket, Peername, Options],
-            {ok, proc_lib:spawn_link(?MODULE, init, [Args])};
+            {ok, proc_lib:spawn_link(?MODULE, init, Args)};
         R = {error, _} -> R
     end.
 
@@ -149,6 +151,9 @@ stats(#state{socket  = Socket,
 call(Pid, Req) ->
     gen_server:call(Pid, Req, infinity).
 
+cast(Pid, Req) ->
+    gen_server:cast(Pid, Req).
+
 stop(Pid) ->
     gen_server:stop(Pid).
 
@@ -169,12 +174,12 @@ esockd_close({udp, _SockPid, Sock}) ->
 esockd_close({esockd_transport, Sock}) ->
     esockd_transport:fast_close(Sock).
 
-esockd_ensure_ok_or_exit(peercert, [{udp, _SockPid, _Sock}]) ->
+esockd_ensure_ok_or_exit(peercert, {udp, _SockPid, _Sock}) ->
     nossl;
-esockd_ensure_ok_or_exit(Fun, [{udp, _SockPid, Sock}]) ->
-    esockd_transport:ensure_ok_or_exit(Fun, Sock);
-esockd_ensure_ok_or_exit(Fun, [{esockd_transport, Socket}]) ->
-    esockd_transport:ensure_ok_or_exit(Fun, Socket).
+esockd_ensure_ok_or_exit(Fun, {udp, _SockPid, Sock}) ->
+    esockd_transport:ensure_ok_or_exit(Fun, [Sock]);
+esockd_ensure_ok_or_exit(Fun, {esockd_transport, Socket}) ->
+    esockd_transport:ensure_ok_or_exit(Fun, [Socket]).
 
 esockd_type({udp, _, _}) ->
     udp;
@@ -221,9 +226,9 @@ init(Parent, WrappedSock, _Peername, Options) ->
     end.
 
 init_state(WrappedSock, Options) ->
-    {ok, Peername} = esockd_ensure_ok_or_exit(peername, [WrappedSock]),
-    {ok, Sockname} = esockd_ensure_ok_or_exit(sockname, [WrappedSock]),
-    Peercert = esockd_ensure_ok_or_exit(peercert, [WrappedSock]),
+    {ok, Peername} = esockd_ensure_ok_or_exit(peername, WrappedSock),
+    {ok, Sockname} = esockd_ensure_ok_or_exit(sockname, WrappedSock),
+    Peercert = esockd_ensure_ok_or_exit(peercert, WrappedSock),
     ConnInfo = #{socktype => esockd_type(WrappedSock),
                  peername => Peername,
                  sockname => Sockname,
@@ -354,6 +359,9 @@ handle_msg({'$gen_call', From, Req}, State) ->
             gen_server:reply(From, Reply),
             stop(Reason, NState)
     end;
+
+handle_msg({'$gen_cast', Req}, State) ->
+    with_channel(handle_cast, [Req], State);
 
 handle_msg({datagram, _SockPid, Data}, State) ->
     process_incoming(Data, State);
@@ -526,10 +534,6 @@ with_channel(Fun, Args, State = #state{channel = Channel}) ->
             {ok, next_msgs(Replies), State#state{channel = NChannel}};
         {shutdown, Reason, NChannel} ->
             shutdown(Reason, State#state{channel = NChannel})
-        %{shutdown, Reason, Packet, NChannel} ->
-        %    NState = State#state{channel = NChannel},
-        %    ok = handle_outgoing(Packet, NState),
-        %    shutdown(Reason, NState)
     end.
 
 %%--------------------------------------------------------------------

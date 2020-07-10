@@ -53,11 +53,11 @@ stop_listeners() ->
 
 -spec(send(pid(), binary()) -> ok).
 send(Conn, Data) when is_pid(Conn), is_binary(Data) ->
-    emqx_exproto_conn:call(Conn, {send, Data}).
+    emqx_exproto_conn:cast(Conn, {send, Data}).
 
 -spec(close(pid()) -> ok).
 close(Conn) when is_pid(Conn) ->
-    emqx_exproto_conn:call(Conn, close).
+    emqx_exproto_conn:cast(Conn, close).
 
 %%--------------------------------------------------------------------
 %% APIs - Protocol/Session level
@@ -69,7 +69,7 @@ register(Conn, ClientInfo0) ->
         {error, Reason} ->
             {error, Reason};
         ClientInfo ->
-            emqx_exproto_conn:call(Conn, {register, ClientInfo})
+            emqx_exproto_conn:cast(Conn, {register, ClientInfo})
     end.
 
 -spec(publish(pid(), list()) -> ok | {error, any()}).
@@ -78,14 +78,14 @@ publish(Conn, Msg0) when is_pid(Conn), is_list(Msg0) ->
         {error, Reason} ->
             {error, Reason};
         Msg ->
-            emqx_exproto_conn:call(Conn, {publish, Msg})
+            emqx_exproto_conn:cast(Conn, {publish, Msg})
     end.
 
 -spec(subscribe(pid(), binary(), emqx_types:qos()) -> ok | {error, any()}).
 subscribe(Conn, Topic, Qos)
   when is_pid(Conn), is_binary(Topic),
        (Qos =:= 0 orelse Qos =:= 1 orelse Qos =:= 2) ->
-    emqx_exproto_conn:call(Conn, {subscribe, Topic, Qos}).
+    emqx_exproto_conn:cast(Conn, {subscribe, Topic, Qos}).
 
 %%--------------------------------------------------------------------
 %% Internal functions

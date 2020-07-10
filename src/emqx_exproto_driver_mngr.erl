@@ -221,9 +221,7 @@ resovle_search_path(python, Opts) ->
         false -> Opts;
         {value, {_, Path}, NOpts} ->
             [{python_path, Path} | NOpts]
-    end;
-resovle_search_path(_, Opts) ->
-    Opts.
+    end.
 
 %% @private
 expand_jar_packages(Path) ->
