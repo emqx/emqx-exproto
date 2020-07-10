@@ -101,7 +101,7 @@ lookup(Name) ->
         Driver when is_map(Driver) -> {ok, Driver}
     end.
 
--spec(call(driver(), fargs()) -> {ok, any()} | {error, any()}).
+-spec(call(driver(), fargs()) -> ok | {ok, any()} | {error, any()}).
 call(_Driver = #{module := Mod, pid := Pid, cbm := Cbm}, FArgs) ->
     do_call(Mod, Pid, Cbm, FArgs).
 

@@ -46,18 +46,22 @@ end_per_group(_, _) ->
 set_sepecial_cfg(emqx_exproto) ->
     Path = emqx_ct_helpers:deps_path(emqx_exproto, "example/"),
     Listeners = application:get_env(emqx_exproto, listeners, []),
-    Driver =
-        case get(grpname) of
-            java ->
-                [{type, java}, {path, Path}, {cbm, main}];
-            python3 ->
-                [{type, python3}, {path, Path}, {cbm, main}]
-        end,
+    Driver = compile(get(grpname), Path),
     NListeners = [{Proto, Type, LisOn, lists:keystore(driver, 1, Opts, {driver, Driver})}
                   || {Proto, Type, LisOn, Opts} <- Listeners],
     application:set_env(emqx_exproto, listeners, NListeners);
 set_sepecial_cfg(_App) ->
     ok.
+
+compile(java, Path) ->
+    ErlPortJar = emqx_ct_helpers:deps_path(erlport, "priv/java/_pkgs/erlport.jar"),
+    ct:pal(os:cmd(lists:concat(["cd ", Path, " && ",
+                                "rm -rf Main.class State.class && ",
+                                "javac -cp ", ErlPortJar, " Main.java"]))),
+
+    [{type, java}, {path, Path}, {cbm, 'Main'}];
+compile(python3, Path) ->
+    [{type, python3}, {path, Path}, {cbm, main}].
 
 %%--------------------------------------------------------------------
 %% Cases

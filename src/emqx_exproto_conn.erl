@@ -90,6 +90,10 @@
 
 -dialyzer({nowarn_function,
            [ system_terminate/4
+           , handle_call/3
+           , handle_msg/2
+           , shutdown/3
+           , stop/3
            ]}).
 
 %% udp

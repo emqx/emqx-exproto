@@ -42,3 +42,4 @@ erlang.mk
 etc/emqx_exproto.conf.rendered
 Mnesia.*/
 __pycache__
+example/*.class

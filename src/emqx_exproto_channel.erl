@@ -142,7 +142,7 @@ init(ConnInfo, Options) ->
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_in(Data, Channel) ->
-    case cb_recevied(Data, Channel) of
+    case cb_received(Data, Channel) of
         {ok, NChannel} ->
             {ok, NChannel};
         {error, Reason} ->
@@ -232,9 +232,9 @@ cb_init(ConnInfo, Driver) ->
     Args = [self(), emqx_exproto_types:serialize(conninfo, ConnInfo)],
     emqx_exproto_driver_mngr:call(Driver, {'init', Args}).
 
-cb_recevied(Data, Channel = #channel{state = DState}) ->
+cb_received(Data, Channel = #channel{state = DState}) ->
     Args = [self(), Data, DState],
-    do_call_cb('recevied', Args, Channel).
+    do_call_cb('received', Args, Channel).
 
 cb_terminated(Reason, Channel = #channel{state = DState}) ->
     Args = [self(), stringfy(Reason), DState],

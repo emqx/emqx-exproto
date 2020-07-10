@@ -15,16 +15,16 @@ def init(conn, conninfo):
 
     ## set an integer num to the connection state
     ## it just a example structure to record the callback total times
-    cnt = 0
+    state = 0
 
     ## subscribe the topic `t/dn` with qos0
     subscribe(conn, b"t/dn", 0)
 
     ## return the initial conn's state
-    return (OK, cnt)
+    return (OK, state)
 
-def recevied(conn, data, state):
-    print(f'[python] recevied data conn={conn}, data={data}, cnt={state}')
+def received(conn, data, state):
+    print(f'[python] received data conn={conn}, data={data}, state={state}')
 
     ## echo the conn's data
     send(conn, data)
@@ -33,14 +33,14 @@ def recevied(conn, data, state):
     return (OK, state+1)
 
 def terminated(conn, reason, state):
-    print(f'[python] terminated conn={conn}, reason={reason}, cnt={state}')
+    print(f'[python] terminated conn={conn}, reason={reason}, state={state}')
     return
 
 ##--------------------------------------------------------------------
 ## Protocol/Session level
 
 def deliver(conn, msgs, state):
-    print(f'[python] recevied messages: conn={conn}, msgs={msgs}, cnt={state}')
+    print(f'[python] received messages: conn={conn}, msgs={msgs}, state={state}')
 
     ## echo the protocol/session messages
     for msg in msgs:
