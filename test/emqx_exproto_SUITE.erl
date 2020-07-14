@@ -28,17 +28,22 @@
 %%--------------------------------------------------------------------
 
 all() ->
-    [{group, java},
-     {group, python3}].
+    [{group, Name} || Name  <- metrics()].
 
 groups() ->
-    [{java, emqx_ct:all(?MODULE)},
-     {python3, emqx_ct:all(?MODULE)}].
+    Cases = emqx_ct:all(?MODULE),
+    [{Name, Cases} || Name <- metrics()].
 
-init_per_group(GrpName, Config) ->
+%% @private
+metrics() ->
+    [{X, Y} || X <- [python3, java],
+               Y <- [tcp, ssl, udp, dtls]].
+
+init_per_group(GrpName = {Lang, LisType}, Config) ->
     put(grpname, GrpName),
     emqx_ct_helpers:start_apps([emqx_exproto], fun set_sepecial_cfg/1),
-    Config.
+    [{driver_type, Lang},
+     {listener_type, LisType} | Config].
 
 end_per_group(_, _) ->
     emqx_ct_helpers:stop_apps([emqx_exproto]).
@@ -92,3 +97,46 @@ t_echo(_) ->
 rand_bytes() ->
     crypto:strong_rand_bytes(rand:uniform(256)).
 
+
+%%--------------------------------------------------------------------
+%% Opts
+
+conn_opts() ->
+    [{active_n, 100},
+     {idle_timeout, 30000}].
+
+listener_opts() ->
+    [{acceptors, 8},
+     {max_connections, 1000},
+     {max_conn_rate, 100},
+     {access_rules, [{allow,all}]}].
+
+tcp_opts() ->
+    [{backlog, 100},
+     {nodelay, true} | udp_opts()].
+
+udp_opts() ->
+    [{send_timeout, 15000},
+     {send_timeout_close, true},
+     {recbuf, 1024},
+     {sndbuf, 1024},
+     {buffer, 1024},
+     {reuseaddr, true}].
+
+ssl_dtls_opts() ->
+    Path = emqx_ct_helpers:deps_path(emqx_exproto, "certs/"),
+    [{versions, ['tlsv1.2','tlsv1.1',tlsv1]},
+     {ciphers, ciphers()},
+     {handshake_timeout, 15000},
+     %{dhfile,"{{ platform_etc_dir }}/certs/dh-params.pem"},
+     {keyfile, Path ++ "key.pem"},
+     {certfile, Path ++ "cert.pem"},
+     {cacertfile, Path ++ "cacert.pem"},
+     {verify, verify_peer},
+     {fail_if_no_peer_cert, true},
+     {secure_renegotiate, false},
+     {reuse_sessions, true},
+     {honor_cipher_order, true}].
+
+ciphers() ->
+    proplists:get_value(ciphers, emqx_ct_helpers:client_ssl()).
