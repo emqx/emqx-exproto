@@ -36,11 +36,12 @@ groups() ->
 
 %% @private
 metrics() ->
-    [{X, Y} || X <- [python3, java],
-               Y <- [tcp, ssl, udp, dtls]].
+    [ list_to_atom(X ++ "_" ++ Y)
+      || X <- ["python3"], Y <- ["tcp", "ssl", "udp", "dtls"]].
 
-init_per_group(GrpName = {Lang, LisType}, Config) ->
-    put(grpname, GrpName),
+init_per_group(GrpName, Config) ->
+    [Lang, LisType] = [list_to_atom(X) || X <- string:tokens(atom_to_list(GrpName), "_")],
+    put(grpname, {Lang, LisType}),
     emqx_ct_helpers:start_apps([emqx_exproto], fun set_sepecial_cfg/1),
     [{driver_type, Lang},
      {listener_type, LisType} | Config].
@@ -58,14 +59,14 @@ set_sepecial_cfg(emqx_exproto) ->
 set_sepecial_cfg(_App) ->
     ok.
 
-compile(java, Path) ->
+compile({java, _}, Path) ->
     ErlPortJar = emqx_ct_helpers:deps_path(erlport, "priv/java/_pkgs/erlport.jar"),
     ct:pal(os:cmd(lists:concat(["cd ", Path, " && ",
                                 "rm -rf Main.class State.class && ",
                                 "javac -cp ", ErlPortJar, " Main.java"]))),
 
     [{type, java}, {path, Path}, {cbm, 'Main'}];
-compile(python3, Path) ->
+compile({python3, _}, Path) ->
     [{type, python3}, {path, Path}, {cbm, main}].
 
 %%--------------------------------------------------------------------
