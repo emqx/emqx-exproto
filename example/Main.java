@@ -1,6 +1,7 @@
 import java.io.*;
 import java.util.*;
-import erlport.terms.*;
+import com.erlport.erlang.term.*;
+import com.erlport.*;
 
 class State implements Serializable {
 
@@ -63,9 +64,10 @@ public class Main {
     //-----------------------
     // Protocol/Session level
     
-    public static Object deliver(Object conn, List<Object> msgs,  Object state) {
-        System.err.printf("[java] received messages conn=%s, msgs=%s, state=%s\n", conn, msgs, state);
+    public static Object deliver(Object conn, Object msgs0,  Object state) {
+        System.err.printf("[java] received messages conn=%s, msgs=%s, state=%s\n", conn, msgs0, state);
 
+        List<Object> msgs = (List<Object>) msgs0;
         for(Object msg: msgs) {
             publish(conn, msg);
         }
@@ -79,27 +81,47 @@ public class Main {
     //-----------------------
     // APIs
     public static void send(Object conn, Object data) {
-        //erlang.call()
+        try {
+            Erlang.call("emqx_exproto", "send", new Object[]{conn, data}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
         return;
     }
 
     public static void close(Object conn) {
-        //erlang.call()
+        try {
+            Erlang.call("emqx_exproto", "close", new Object[]{conn}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
         return;
     }
 
     public static void register(Object conn, Object clientInfo) {
-        //erlang.call()
+        try {
+            Erlang.call("emqx_exproto", "register", new Object[]{conn, clientInfo}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
         return;
     }
 
     public static void publish(Object conn, Object message) {
-        //erlang.call()
+        try {
+            Erlang.call("emqx_exproto", "publish", new Object[]{conn, message}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
         return;
     }
 
     public static void subscribe(Object conn, Object topic, Object qos) {
-        //erlang.call()
+        try {
+            Erlang.call("emqx_exproto", "subscribe", new Object[]{conn, topic, qos}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
         return;
     }
 }
