@@ -47,11 +47,6 @@
   {datatype, {duration, ms}}
 ]}.
 
-{mapping, "exproto.listener.$proto.rate_limit", "emqx_exproto.listeners", [
-  {default, undefined},
-  {datatype, string}
-]}.
-
 {mapping, "exproto.listener.$proto.access.$id", "emqx_exproto.listeners", [
   {datatype, string}
 ]}.
@@ -211,7 +206,6 @@
 
     ConnOpts = fun(Prefix) ->
                    Filter([{active_n, cuttlefish:conf_get(Prefix ++ ".active_n", Conf, undefined)},
-                           {rate_limit, RateLimit(cuttlefish:conf_get(Prefix ++ ".rate_limit", Conf, undefined))},
                            {idle_timeout, cuttlefish:conf_get(Prefix ++ ".idle_timeout", Conf, undefined)}])
                end,
 
