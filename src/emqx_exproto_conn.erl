@@ -242,7 +242,8 @@ init_state(WrappedSock, Options) ->
 
     ActiveN = proplists:get_value(active_n, Options, ?ACTIVE_N),
 
-    Limiter = emqx_limiter:init(Options),
+    %% FIXME:
+    %%Limiter = emqx_limiter:init(Options),
 
     Channel = emqx_exproto_channel:init(ConnInfo, Options),
 
@@ -256,7 +257,7 @@ init_state(WrappedSock, Options) ->
            sockstate    = idle,
            active_n     = ActiveN,
            sendfun      = sendfun(WrappedSock, Peername),
-           limiter      = Limiter,
+           limiter      = undefined,
            channel      = Channel,
            gc_state     = GcState,
            stats_timer  = disabled,
