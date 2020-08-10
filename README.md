@@ -4,7 +4,7 @@ The `emqx_exproto` extremly enhance the extensibility for EMQ X. It allow using 
 
 ## Feature
 
-- [ ] Support Pyhoth, Java.
+- [x] Support Pyhoth, Java.
 - [x] Support the `tcp`, `ssl`, `udp`, `dtls` socket.
 - [x] Provide the `PUB/SUB` interface to others language.
 
@@ -20,21 +20,23 @@ We temporarily no plans to support other languages. Plaease open a issue if you 
 
 ***Requirements:***
 
-- It requires the emqx hosted machine has Python2/Python3 Runtimes
-- An executable commands in your shell, i,g: `python2` or `python3`
+- It requires the emqx hosted machine has Python3 Runtimes
+- An executable commands in your shell, i,g: `python3` or `python`
 
 ***Examples:***
 
-See `example/main.py`
+See [example/main.python](https://github.com/emqx/emqx-exproto/blob/master/example/main.py)
 
 ### Java
 
-***Work in progress...***
+See [example/Main.java](https://github.com/emqx/emqx-exproto/blob/master/example/Main.java)
 
 
 ## SDK
 
-***Work in progress...***
+The SDK encloses the underlying obscure data types and function interfaces. It only provides a convenience for development, it is not required.
+
+See [sdk/README.md](https://github.com/emqx/emqx-exproto/blob/master/sdk/README.md)
 
 
 ## Benchmark
