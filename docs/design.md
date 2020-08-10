@@ -15,7 +15,7 @@
 
 ##  架构
 
-![Extension-Protocol Arch](resource/exproto-arch.jpg)
+![Extension-Protocol Arch](images/exproto-arch.jpg)
 
 该插件需要完成的工作包括三部分：
 
