@@ -18,7 +18,7 @@
 
 -behaviour(application).
 
--plugin(extension).
+-emqx_plugin(extension).
 
 -export([start/2, prep_stop/1, stop/1]).
 

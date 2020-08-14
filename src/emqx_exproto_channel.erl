@@ -44,9 +44,10 @@
           driver :: emqx_exproto_driver_mnger:driver(),
           %% Conn info
           conninfo :: emqx_types:conninfo(),
-          %% Client info
           %% Client info from `register` function
           clientinfo :: maybe(map()),
+          %% Registered
+          registered = false :: boolean(),
           %% Connection state
           conn_state :: conn_state(),
           %% Subscription
@@ -185,6 +186,9 @@ handle_cast({send, Data}, Channel) ->
 handle_cast(close, Channel) ->
     {ok, [{close, normal}], Channel};
 
+handle_cast({register, ClientInfo}, Channel = #channel{registered = true}) ->
+    ?WARN("Duplicated register command, dropped ~p", [ClientInfo]),
+    {ok, Channel};
 handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
                                                         clientinfo = ClientInfo}) ->
     ClientInfo1 = maybe_assign_clientid(ClientInfo0),
@@ -192,15 +196,20 @@ handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
     NClientInfo = enrich_clientinfo(ClientInfo1, ClientInfo),
     case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
         {ok, _Session} ->
-            {reply, ok, Channel#channel{conninfo = NConnInfo, clientinfo = NClientInfo}};
+            NChannel = Channel#channel{registered = true,
+                                       conninfo = NConnInfo,
+                                       clientinfo = NClientInfo},
+            {ok, [{event, registered}], NChannel};
         {error, Reason} ->
             ?ERROR("Register failed, reason: ~p", [Reason]),
             {shutdown, Reason, {error, Reason}, Channel}
     end;
 
-handle_cast({subscribe, Topic0, Qos}, Channel = #channel{subscription = Subs}) ->
+handle_cast({subscribe, Topic0, Qos}, Channel = #channel{clientinfo = ClientInfo,
+                                                         subscription = Subs}) ->
     {Topic, Opts} = emqx_topic:parse(Topic0),
-    SubOpts = Opts#{qos => Qos},
+    SubId = maps:get(clientid, ClientInfo, undefined),
+    SubOpts = Opts#{qos => Qos, sub_props => #{}, subid => SubId},
     emqx:subscribe(Topic, SubOpts),
     {ok, Channel#channel{subscription = Subs#{Topic => SubOpts}}};
 
@@ -216,6 +225,8 @@ handle_cast(Req, Channel) ->
 -spec(handle_info(any(), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
+handle_info({sock_closed, Reason}, Channel) ->
+    {shutdown, {sock_closed, Reason}, Channel};
 handle_info(Info, Channel) ->
     ?WARN("Unexpected info: ~p", [Info]),
     {ok, Channel}.
@@ -300,7 +311,7 @@ default_clientinfo(#{peername := {PeerHost, _},
       protocol     => undefined,
       peerhost     => PeerHost,
       sockport     => SockPort,
-      clientid     => undefined,
+      clientid     => default_clientid(),
       username     => undefined,
       is_bridge    => false,
       is_superuser => false,
@@ -314,3 +325,5 @@ lowcase_atom(undefined) ->
 lowcase_atom(S) ->
     binary_to_atom(string:lowercase(S), utf8).
 
+default_clientid() ->
+    <<"exproto_client_", (list_to_binary(pid_to_list(self())))/binary>>.

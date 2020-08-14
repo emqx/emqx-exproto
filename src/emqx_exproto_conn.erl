@@ -201,8 +201,6 @@ esockd_getstat({udp, _SockPid, Sock}, Stats) ->
 esockd_getstat({esockd_transport, Sock}, Stats) ->
     esockd_transport:getstat(Sock, Stats).
 
-
-
 sendfun({udp, _SockPid, Sock}, {Ip, Port}) ->
     fun(Data) ->
         gen_udp:send(Sock, Ip, Port, Data)
@@ -422,16 +420,16 @@ handle_msg({close, Reason}, State) ->
     ?LOG(debug, "Force to close the socket due to ~p", [Reason]),
     handle_info({sock_closed, Reason}, close_socket(State));
 
-%handle_msg({event, connected}, State = #state{channel = Channel}) ->
-%    ClientId = emqx_exproto_channel:info(clientid, Channel),
-%    emqx_cm:register_channel(ClientId, info(State), stats(State));
-%
+handle_msg({event, registered}, State = #state{channel = Channel}) ->
+    ClientId = emqx_exproto_channel:info(clientid, Channel),
+    emqx_cm:register_channel(ClientId, info(State), stats(State));
+
 %handle_msg({event, disconnected}, State = #state{channel = Channel}) ->
 %    ClientId = emqx_exproto_channel:info(clientid, Channel),
 %    emqx_cm:set_chan_info(ClientId, info(State)),
 %    emqx_cm:connection_closed(ClientId),
 %    {ok, State};
-
+%
 %handle_msg({event, _Other}, State = #state{channel = Channel}) ->
 %    ClientId = emqx_exproto_channel:info(clientid, Channel),
 %    emqx_cm:set_chan_info(ClientId, info(State)),
