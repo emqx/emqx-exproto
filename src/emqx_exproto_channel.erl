@@ -51,7 +51,7 @@
           %% Connection state
           conn_state :: conn_state(),
           %% Subscription
-          subscription = #{},
+          subscriptions = #{},
           %% Driver level state
           state :: any()
          }).
@@ -99,8 +99,13 @@ info(clientid, #channel{clientinfo = ClientInfo}) ->
     maps:get(clientid, ClientInfo, undefined);
 info(clientinfo, #channel{clientinfo = ClientInfo}) ->
     ClientInfo;
-info(session, _) ->
-    undefined;
+info(session, #channel{subscriptions = Subs,
+                       conninfo = ConnInfo}) ->
+    #{subscriptions => Subs,
+      upgrade_qos => false,
+      retry_interval => 0,
+      await_rel_timeout => 0,
+      created_at => maps:get(connected_at, ConnInfo)};
 info(conn_state, #channel{conn_state = ConnState}) ->
     ConnState;
 info(will_msg, _) ->
@@ -154,7 +159,7 @@ handle_in(Data, Channel) ->
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_deliver(Delivers, Channel) ->
-    %% TODO: ?? Nack delivers from shared subscription
+    %% TODO: ?? Nack delivers from shared subscriptions
     case cb_deliver(Delivers, Channel) of
         {ok, NChannel} ->
             {ok, NChannel};
@@ -206,12 +211,12 @@ handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
     end;
 
 handle_cast({subscribe, Topic0, Qos}, Channel = #channel{clientinfo = ClientInfo,
-                                                         subscription = Subs}) ->
+                                                         subscriptions = Subs}) ->
     {Topic, Opts} = emqx_topic:parse(Topic0),
     SubId = maps:get(clientid, ClientInfo, undefined),
     SubOpts = Opts#{qos => Qos, sub_props => #{}, subid => SubId},
     emqx:subscribe(Topic, SubOpts),
-    {ok, Channel#channel{subscription = Subs#{Topic => SubOpts}}};
+    {ok, Channel#channel{subscriptions = Subs#{Topic => SubOpts}}};
 
 handle_cast({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
     NMsg = enrich_msg_from(ClientInfo, Msg),
