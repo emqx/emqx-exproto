@@ -78,8 +78,6 @@ t_start_stop(_) ->
 
 t_echo(_) ->
     {ok, Sock} = gen_tcp:connect("127.0.0.1", 7993, ?TCPOPTS),
-    %% FIXME: Shouldn't sleep here
-    timer:sleep(1000),
     %% tcp echo
     Bin = rand_bytes(),
     gen_tcp:send(Sock, Bin),
