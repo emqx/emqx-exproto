@@ -119,11 +119,6 @@
   {datatype, string}
 ]}.
 
-{mapping, "exproto.listener.$proto.handshake_timeout", "emqx_exproto.listeners", [
-  {default, "15s"},
-  {datatype, {duration, ms}}
-]}.
-
 {mapping, "exproto.listener.$proto.dhfile", "emqx_exproto.listeners", [
   {datatype, string}
 ]}.
@@ -263,7 +258,7 @@
                   Filter([{versions, Versions},
                           {ciphers, Ciphers},
                           {user_lookup_fun, UserLookupFun},
-                          {handshake_timeout, cuttlefish:conf_get(Prefix ++ ".handshake_timeout", Conf, undefined)},
+                          %{handshake_timeout, cuttlefish:conf_get(Prefix ++ ".handshake_timeout", Conf, undefined)},
                           {dhfile, cuttlefish:conf_get(Prefix ++ ".dhfile", Conf, undefined)},
                           {keyfile,    cuttlefish:conf_get(Prefix ++ ".keyfile", Conf, undefined)},
                           {certfile,   cuttlefish:conf_get(Prefix ++ ".certfile", Conf, undefined)},
@@ -276,9 +271,7 @@
               end,
 
     UdpOpts = fun(Prefix) ->
-                  Filter([{send_timeout, cuttlefish:conf_get(Prefix ++ ".send_timeout", Conf, undefined)},
-                          {send_timeout_close, cuttlefish:conf_get(Prefix ++ ".send_timeout_close", Conf, undefined)},
-                          {recbuf,  cuttlefish:conf_get(Prefix ++ ".recbuf", Conf, undefined)},
+                  Filter([{recbuf,  cuttlefish:conf_get(Prefix ++ ".recbuf", Conf, undefined)},
                           {sndbuf,  cuttlefish:conf_get(Prefix ++ ".sndbuf", Conf, undefined)},
                           {buffer,  cuttlefish:conf_get(Prefix ++ ".buffer", Conf, undefined)},
                           {reuseaddr, cuttlefish:conf_get(Prefix ++ ".reuseaddr", Conf, undefined)}])
