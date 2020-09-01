@@ -218,17 +218,16 @@ sendfun({esockd_transport, Sock}, _) ->
 -define(DEFAULT_IDLE_TIMEOUT, 30000).
 -define(DEFAULT_OOM_POLICY, #{max_heap_size => 4194304,message_queue_len => 32000}).
 
-init(Parent, WrappedSock, _Peername, Options) ->
+init(Parent, WrappedSock, Peername, Options) ->
     case esockd_wait(WrappedSock) of
         {ok, NWrappedSock} ->
-            run_loop(Parent, init_state(NWrappedSock, Options));
+            run_loop(Parent, init_state(NWrappedSock, Peername, Options));
         {error, Reason} ->
             ok = esockd_close(WrappedSock),
             exit_on_sock_error(Reason)
     end.
 
-init_state(WrappedSock, Options) ->
-    {ok, Peername} = esockd_ensure_ok_or_exit(peername, WrappedSock),
+init_state(WrappedSock, Peername, Options) ->
     {ok, Sockname} = esockd_ensure_ok_or_exit(sockname, WrappedSock),
     Peercert = esockd_ensure_ok_or_exit(peercert, WrappedSock),
     ConnInfo = #{socktype => esockd_type(WrappedSock),
