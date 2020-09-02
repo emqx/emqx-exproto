@@ -22,7 +22,7 @@
 
 -log_header("[ExProto DMngr]").
 
--compile({no_auto_import, [erase/1]}).
+-compile({no_auto_import, [erase/1, get/1]}).
 
 %% API
 -export([start_link/0]).
@@ -50,18 +50,14 @@
 -define(SERVER, ?MODULE).
 -define(DEFAULT_CBM, main).
 
-%-type state() :: #{drivers := [{atom(), pid()}]}.
-
 -type driver() :: #{name := driver_name(),
-                    module := driver_module(),
-                    cbm := module(),
+                    type := atom(),
+                    cbm := atom(),
                     pid := pid(),
                     opts := list()
                    }.
 
 -type driver_name() :: atom().
-
--type driver_module() :: python | java.
 
 -type fargs() :: {atom(), list()}.
 
@@ -101,24 +97,48 @@ lookup(Name) ->
         Driver when is_map(Driver) -> {ok, Driver}
     end.
 
--spec(call(driver(), fargs()) -> ok | {ok, any()} | {error, any()}).
-call(_Driver = #{module := Mod, pid := Pid, cbm := Cbm}, FArgs) ->
-    do_call(Mod, Pid, Cbm, FArgs).
+-spec(call(driver_name(), fargs()) -> ok | {ok, any()} | {error, any()}).
+call(Name, FArgs) ->
+    ensure_alived(Name, fun(Driver) -> do_call(Driver, FArgs) end).
 
 %% @private
-do_call(Mod, Pid, Cbm, {F, Args}) ->
-    case catch apply(Mod, call, [Pid, Cbm, F, Args]) of
+ensure_alived(Name, Fun) ->
+    case catch get(Name) of
+        {'EXIT', _} ->
+            {error, not_found};
+        Driver ->
+            ensure_alived(10, Driver, Fun)
+    end.
+
+%% @private
+ensure_alived(0, _, _) ->
+    {error, driver_process_exited};
+ensure_alived(N, Driver = #{name := Name, pid := Pid}, Fun) ->
+    case is_process_alive(Pid) of
+        true -> Fun(Driver);
+        _ ->
+            timers:sleep(100),
+            #{pid := NPid} = get(Name),
+            case is_process_alive(NPid) of
+                true -> Fun(Driver);
+                _ -> ensure_alived(N-1, Driver#{pid => NPid}, Fun)
+            end
+    end.
+
+%% @private
+do_call(#{type := Type, pid := Pid, cbm := Cbm}, {F, Args}) ->
+    case catch apply(erlport, call, [Pid, Cbm, F, Args, []]) of
         ok -> ok;
         undefined -> ok;
         {_Ok = 0, Return} -> {ok, Return};
         {_Err = 1, Reason} -> {error, Reason};
         {'EXIT', Reason, Stk} ->
             ?LOG(error, "CALL ~p ~p:~p(~p), exception: ~p, stacktrace ~0p",
-                        [Mod, Cbm, F, Args, Reason, Stk]),
+                        [Type, Cbm, F, Args, Reason, Stk]),
             {error, Reason};
         _X ->
             ?LOG(error, "CALL ~p ~p:~p(~p), unknown return: ~0p",
-                        [Mod, Cbm, F, Args, _X]),
+                        [Type, Cbm, F, Args, _X]),
             {error, unknown_return_format}
     end.
 
@@ -127,6 +147,7 @@ do_call(Mod, Pid, Cbm, {F, Args}) ->
 %%--------------------------------------------------------------------
 
 init([]) ->
+    process_flag(trap_exit, true),
     {ok, #{drivers => []}}.
 
 handle_call({ensure, {Type, Name, Cbm, Opts}}, _From, State = #{drivers := Drivers}) ->
@@ -135,7 +156,7 @@ handle_call({ensure, {Type, Name, Cbm, Opts}}, _From, State = #{drivers := Drive
             case do_start_driver(Type, Opts) of
                 {ok, Pid} ->
                     Driver = #{name => Name,
-                               module => module(Type),
+                               type => Type,
                                cbm => Cbm,
                                pid => Pid,
                                opts => Opts},
@@ -174,12 +195,31 @@ handle_cast(Msg, State) ->
     ?WARN("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
+handle_info({'EXIT', _From, normal}, State) ->
+    {noreply, State};
+handle_info({'EXIT', From, Reason}, State = #{drivers := Drivers}) ->
+    case [Drv || {_, Drv = #{pid := P}} <- Drivers, P =:= From] of
+        [] -> {noreply, State};
+        [Driver = #{name := Name, type := Type, opts := Opts}] ->
+            ?WARN("Driver ~p crashed: ~p", [Name, Reason]),
+            case do_start_driver(Type, Opts) of
+                {ok, Pid} ->
+                    NDriver = Driver#{pid => Pid},
+                    ok = save(Name, NDriver),
+                    NDrivers = lists:keyreplace(Name, 1, Drivers, {Name, NDriver}),
+                    ?WARN("Restarted driver ~p, pid: ~p", [Name, Pid]),
+                    {noreply, State#{drivers => NDrivers}};
+                {error, Reason} ->
+                    ?WARN("Restart driver ~p failed: ~p", [Name, Reason]),
+                    {noreply, State}
+            end
+    end;
+
 handle_info(Info, State) ->
     ?WARN("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    %% Is there need stop all drivers?
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -249,10 +289,6 @@ pathsep() ->
 %%--------------------------------------------------------------------
 %% Utils
 
-module(python2) -> python;
-module(python3) -> python;
-module(java) -> java.
-
 reply(Term, State) ->
     {reply, Term, State}.
 
@@ -262,3 +298,5 @@ save(Name, Driver) ->
 erase(Name) ->
     persistent_term:erase({?MODULE, Name}).
 
+get(Name) ->
+    persistent_term:get({?MODULE, Name}).
