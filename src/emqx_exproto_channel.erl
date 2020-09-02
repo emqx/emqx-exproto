@@ -40,8 +40,8 @@
 -export_type([channel/0]).
 
 -record(channel, {
-          %% Driver
-          driver :: emqx_exproto_driver_mnger:driver(),
+          %% Driver name
+          driver :: atom(),
           %% Conn info
           conninfo :: emqx_types:conninfo(),
           %% Client info from `register` function
@@ -122,22 +122,18 @@ stats(_Channel) ->
 
 -spec(init(emqx_exproto_types:conninfo(), proplists:proplist()) -> channel()).
 init(ConnInfo, Options) ->
-    case emqx_exproto_driver_mngr:lookup(proplists:get_value(driver, Options)) of
-        {ok, Driver} ->
-            case cb_init(ConnInfo, Driver) of
-                    {ok, DState} ->
-                        NConnInfo = default_conninfo(ConnInfo),
-                        ClientInfo = default_clientinfo(ConnInfo),
-                        #channel{driver = Driver,
-                                 state = DState,
-                                 conninfo = NConnInfo,
-                                 clientinfo = ClientInfo,
-                                 conn_state = connected};
-                    {error, Reason} ->
-                        exit({init_channel_failed, Reason})
-            end;
-        {error, Reason} ->
-            exit({lookup_driver_failed, Reason})
+    Driver = proplists:get_value(driver, Options),
+    case cb_init(ConnInfo, Driver) of
+            {ok, DState} ->
+                NConnInfo = default_conninfo(ConnInfo),
+                ClientInfo = default_clientinfo(ConnInfo),
+                #channel{driver = Driver,
+                         state = DState,
+                         conninfo = NConnInfo,
+                         clientinfo = ClientInfo,
+                         conn_state = connected};
+            {error, Reason} ->
+                exit({init_channel_failed, Reason})
     end.
 
 %%--------------------------------------------------------------------

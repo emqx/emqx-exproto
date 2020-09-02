@@ -52,6 +52,5 @@ See [sdk/README.md](https://github.com/emqx/emqx-exproto/blob/master/sdk/README.
 ## Reference
 
 - [erlport](https://github.com/hdima/erlport)
-- [Eexternal Term Format](http://erlang.org/doc/apps/erts/erl_ext_dist.html)
+- [External Term Format](http://erlang.org/doc/apps/erts/erl_ext_dist.html)
 - [The Ports Tutorial of Erlang](http://erlang.org/doc/tutorial/c_port.html)
-
