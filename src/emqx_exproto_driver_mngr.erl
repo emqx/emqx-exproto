@@ -117,7 +117,7 @@ ensure_alived(N, Driver = #{name := Name, pid := Pid}, Fun) ->
     case is_process_alive(Pid) of
         true -> Fun(Driver);
         _ ->
-            timers:sleep(100),
+            timer:sleep(100),
             #{pid := NPid} = get(Name),
             case is_process_alive(NPid) of
                 true -> Fun(Driver);
