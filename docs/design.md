@@ -38,6 +38,7 @@
 - 提供 `register` 接口。供外部模块调用，用于向集群注册客户端。
 - 提供 `publish` 接口。供外部模块调用，用于发布消息 EMQ X Broker 中。
 - 提供 `subscribe` 接口。供外部模块调用，用于订阅某主题，以实现从 EMQ X Broker 中接收某些下行消息。
+- 提供 `unsubscribe` 接口。供外部模块调用，用于取消订阅某主题。
 - 调用 `deliver` 回调。用于接收下行消息（在订阅主题成功后，如果主题上有消息，便会回调该方法）
 
 
@@ -118,14 +119,16 @@ publish(conn(), message()) -> ok.
 %% Subscribe a topic
 subscribe(conn(), topic(), qos()) -> ok.
 
+%% Unsubscribe a topic
+unsubscribe(conn(), topic()) -> ok.
+
 -type clientinfo() :: [ {proto_name, binary()}
                       , {proto_ver, integer() | string()}
                       , {clientid, binary()}
                       , {username, binary()}
                       , {mountpoint, binary()}}
                       , {keepalive, non_neg_integer()}
-								      ].
-
+                      ].
 ```
 
 ### 管理&统计相关接口
@@ -170,5 +173,4 @@ exproto.listener.coap.driver = java
 
 ## TODOs:
 
-- 认证 和 发布 订阅鉴权？？是否需要实现
-- Mgmt 各类 API 的支持。例如：踢下线，清理 ACL 缓存，包括以后的 Listener 管理？
+- 认证 和 发布 订阅鉴权等钩子接入
