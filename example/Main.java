@@ -124,4 +124,13 @@ public class Main {
         }
         return;
     }
+
+    public static void unsubscribe(Object conn, Object topic) {
+        try {
+            Erlang.call("emqx_exproto", "unsubscribe", new Object[]{conn, topic}, 5000);
+        } catch (Exception e) {
+            System.err.printf("[java] send data error: %s\n", e);
+        }
+        return;
+    }
 }
