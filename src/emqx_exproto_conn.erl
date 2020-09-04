@@ -257,7 +257,7 @@ init_state(WrappedSock, Peername, Options) ->
            limiter      = undefined,
            channel      = Channel,
            gc_state     = GcState,
-           stats_timer  = disabled,
+           stats_timer  = undefined,
            idle_timeout = IdleTimeout,
            idle_timer   = IdleTimer
           }.
