@@ -33,6 +33,7 @@
 -export([ register/2
         , publish/2
         , subscribe/3
+        , unsubscribe/2
         ]).
 
 %%--------------------------------------------------------------------
@@ -86,6 +87,11 @@ subscribe(Conn, Topic, Qos)
   when is_pid(Conn), is_binary(Topic),
        (Qos =:= 0 orelse Qos =:= 1 orelse Qos =:= 2) ->
     emqx_exproto_conn:cast(Conn, {subscribe, Topic, Qos}).
+
+-spec(unsubscribe(pid(), binary()) -> ok | {error, any()}).
+unsubscribe(Conn, Topic)
+  when is_pid(Conn), is_binary(Topic) ->
+    emqx_exproto_conn:cast(Conn, {unsubscribe, Topic}).
 
 %%--------------------------------------------------------------------
 %% Internal functions
