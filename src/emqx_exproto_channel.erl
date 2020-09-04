@@ -17,6 +17,7 @@
 -module(emqx_exproto_channel).
 
 -include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("emqx/include/types.hrl").
 -include_lib("emqx/include/logger.hrl").
 
@@ -112,9 +113,17 @@ info(will_msg, _) ->
     undefined.
 
 -spec(stats(channel()) -> emqx_types:stats()).
-stats(_Channel) ->
-    %% XXX:
-    [].
+stats(#channel{subscriptions = Subs}) ->
+    [{subscriptions_cnt, maps:size(Subs)},
+     {subscriptions_max, 0},
+     {inflight_cnt, 0},
+     {inflight_max, 0},
+     {mqueue_len, 0},
+     {mqueue_max, 0},
+     {mqueue_dropped, 0},
+     {next_pkt_id, 0},
+     {awaiting_rel_cnt, 0},
+     {awaiting_rel_max, 0}].
 
 %%--------------------------------------------------------------------
 %% Init the channel
@@ -173,6 +182,9 @@ handle_timeout(_TRef, Msg, Channel) ->
 -spec(handle_call(any(), channel())
      -> {reply, Reply :: term(), channel()}
       | {shutdown, Reason :: term(), Reply :: term(), channel()}).
+handle_call(kick, Channel) ->
+    {shutdown, kicked, ok, Channel};
+
 handle_call(Req, Channel) ->
     ?WARN("Unexpected call: ~p", [Req]),
     {reply, ok, Channel}.
@@ -206,13 +218,11 @@ handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
             {shutdown, Reason, {error, Reason}, Channel}
     end;
 
-handle_cast({subscribe, Topic0, Qos}, Channel = #channel{clientinfo = ClientInfo,
-                                                         subscriptions = Subs}) ->
-    {Topic, Opts} = emqx_topic:parse(Topic0),
-    SubId = maps:get(clientid, ClientInfo, undefined),
-    SubOpts = Opts#{qos => Qos, sub_props => #{}, subid => SubId},
-    emqx:subscribe(Topic, SubOpts),
-    {ok, Channel#channel{subscriptions = Subs#{Topic => SubOpts}}};
+handle_cast({subscribe, TopicFilter, Qos}, Channel) ->
+    do_subscribe([{TopicFilter, #{qos => Qos}}], Channel);
+
+handle_cast({unsubscribe, TopicFilter}, Channel) ->
+    do_unsubscribe([{TopicFilter, #{}}], Channel);
 
 handle_cast({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
     NMsg = enrich_msg_from(ClientInfo, Msg),
@@ -226,6 +236,14 @@ handle_cast(Req, Channel) ->
 -spec(handle_info(any(), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
+handle_info({subscribe, TopicFilters}, Channel) ->
+    do_subscribe(TopicFilters, Channel);
+
+handle_info({unsubscribe, TopicFilters}, Channel = #channel{clientinfo = #{mountpoint := Mountpoint}}) ->
+    NTopicFilters = [{emqx_mountpoint:unmount(Mountpoint, TopicFilter), UnSubOpts}
+                      || {TopicFilter, UnSubOpts} <- TopicFilters],
+    do_unsubscribe(NTopicFilters, Channel);
+
 handle_info({sock_closed, Reason}, Channel) ->
     {shutdown, {sock_closed, Reason}, Channel};
 handle_info(Info, Channel) ->
@@ -235,6 +253,46 @@ handle_info(Info, Channel) ->
 -spec(terminate(any(), channel()) -> ok).
 terminate(Reason, Channel) ->
     cb_terminated(Reason, Channel), ok.
+
+%%--------------------------------------------------------------------
+%% Sub/UnSub
+%%--------------------------------------------------------------------
+
+do_subscribe(TopicFilters, Channel) ->
+    NChannel = lists:foldl(
+        fun({TopicFilter, SubOpts}, ChannelAcc) ->
+            do_subscribe(TopicFilter, SubOpts, ChannelAcc)
+        end, Channel, parse_topic_filters(TopicFilters)),
+    {ok, NChannel}.
+
+%% @private
+do_subscribe(TopicFilter, SubOpts, Channel =
+             #channel{clientinfo = ClientInfo = #{mountpoint := Mountpoint},
+                      subscriptions = Subs}) ->
+    NTopicFilter = emqx_mountpoint:mount(Mountpoint, TopicFilter),
+    NSubOpts = maps:merge(?DEFAULT_SUBOPTS, SubOpts),
+    SubId = maps:get(clientid, ClientInfo, undefined),
+    _ = emqx:subscribe(NTopicFilter, SubId, NSubOpts),
+    Channel#channel{subscriptions = Subs#{NTopicFilter => SubOpts}}.
+
+do_unsubscribe(TopicFilters, Channel) ->
+    NChannel = lists:foldl(
+        fun({TopicFilter, SubOpts}, ChannelAcc) ->
+            do_unsubscribe(TopicFilter, SubOpts, ChannelAcc)
+        end, Channel, parse_topic_filters(TopicFilters)),
+    {ok, NChannel}.
+
+%% @private
+do_unsubscribe(TopicFilter, _SubOpts, Channel =
+               #channel{clientinfo = #{mountpoint := Mountpoint},
+                        subscriptions = Subs}) ->
+    TopicFilter1 = emqx_mountpoint:mount(Mountpoint, TopicFilter),
+    _ = emqx:unsubscribe(TopicFilter1),
+    Channel#channel{subscriptions = maps:remove(TopicFilter1, Subs)}.
+
+%% @private
+parse_topic_filters(TopicFilters) ->
+    lists:map(fun emqx_topic:parse/1, TopicFilters).
 
 %%--------------------------------------------------------------------
 %% Cbs for driver
