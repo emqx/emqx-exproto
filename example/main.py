@@ -74,3 +74,7 @@ def subscribe(conn, topic, qos):
     erlang.call(Atom(b'emqx_exproto'), Atom(b'subscribe'), [conn, topic, qos])
     return
 
+def unsubscribe(conn, topic):
+    erlang.call(Atom(b'emqx_exproto'), Atom(b'subscribe'), [conn, topic])
+    return
+
