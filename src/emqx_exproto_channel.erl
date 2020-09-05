@@ -238,10 +238,8 @@ handle_cast(Req, Channel) ->
 handle_info({subscribe, TopicFilters}, Channel) ->
     do_subscribe(TopicFilters, Channel);
 
-handle_info({unsubscribe, TopicFilters}, Channel = #channel{clientinfo = #{mountpoint := Mountpoint}}) ->
-    NTopicFilters = [{emqx_mountpoint:unmount(Mountpoint, TopicFilter), UnSubOpts}
-                      || {TopicFilter, UnSubOpts} <- TopicFilters],
-    do_unsubscribe(NTopicFilters, Channel);
+handle_info({unsubscribe, TopicFilters}, Channel) ->
+    do_unsubscribe(TopicFilters, Channel);
 
 handle_info({sock_closed, Reason}, Channel) ->
     {shutdown, {sock_closed, Reason}, Channel};
