@@ -224,9 +224,8 @@ handle_cast({subscribe, TopicFilter, Qos}, Channel) ->
 handle_cast({unsubscribe, TopicFilter}, Channel) ->
     do_unsubscribe([{TopicFilter, #{}}], Channel);
 
-handle_cast({publish, Msg}, Channel = #channel{clientinfo = ClientInfo}) ->
-    NMsg = enrich_msg_from(ClientInfo, Msg),
-    emqx:publish(NMsg),
+handle_cast({publish, Msg}, Channel) ->
+    emqx:publish(enrich_msg(Msg, Channel)),
     {ok, Channel};
 
 handle_cast(Req, Channel) ->
@@ -338,10 +337,11 @@ maybe_assign_clientid(ClientInfo) ->
             ClientInfo
     end.
 
-enrich_msg_from(ClientInfo, Msg) ->
+enrich_msg(Msg, #channel{clientinfo = ClientInfo = #{mountpoint := Mountpoint}}) ->
+    NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
     case maps:get(clientid, ClientInfo, undefined) of
-        undefined -> Msg;
-        ClientId -> Msg#message{from = ClientId}
+        undefined -> NMsg;
+        ClientId -> NMsg#message{from = ClientId}
     end.
 
 enrich_conninfo(InClientInfo, ConnInfo) ->
