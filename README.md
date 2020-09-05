@@ -4,7 +4,7 @@ The `emqx_exproto` extremly enhance the extensibility for EMQ X. It allow using 
 
 ## Feature
 
-- [x] Support Pyhoth, Java.
+- [x] Support Python, Java.
 - [x] Support the `tcp`, `ssl`, `udp`, `dtls` socket.
 - [x] Provide the `PUB/SUB` interface to others language.
 
