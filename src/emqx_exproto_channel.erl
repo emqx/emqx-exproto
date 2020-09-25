@@ -215,7 +215,7 @@ handle_call(close, Channel) ->
     {reply, ok, [{close, normal}], Channel};
 
 handle_call({auth, ClientInfo, _Password}, Channel = #channel{authorized = true}) ->
-    ?LOG(wanring, "Duplicated authorized command, dropped ~p", [ClientInfo]),
+    ?LOG(warning, "Duplicated authorized command, dropped ~p", [ClientInfo]),
     {ok, {error, already_authorized}, Channel};
 handle_call({auth, ClientInfo0, Password},
             Channel = #channel{conninfo = ConnInfo,
