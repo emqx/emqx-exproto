@@ -250,21 +250,35 @@ handle_call({auth, ClientInfo0, Password},
             {shutdown, Reason, {error, Reason}, Channel1}
     end;
 
-handle_call({subscribe, TopicFilter, Qos}, Channel) ->
-    {ok, NChannel} = do_subscribe([{TopicFilter, #{qos => Qos}}], Channel),
-    {reply, ok, NChannel};
+handle_call({subscribe, TopicFilter, Qos},
+            Channel = #channel{clientinfo = ClientInfo}) ->
+    case is_acl_enabled(ClientInfo) andalso
+         emqx_access_control:check_acl(ClientInfo, subscribe, TopicFilter) of
+        deny ->
+            {reply, {error, "ACL deny"}, Channel};
+        _ ->
+            {ok, NChannel} = do_subscribe([{TopicFilter, #{qos => Qos}}], Channel),
+            {reply, ok, NChannel}
+    end;
 
 handle_call({unsubscribe, TopicFilter}, Channel) ->
     {ok, NChannel} = do_unsubscribe([{TopicFilter, #{}}], Channel),
     {reply, ok, NChannel};
 
 handle_call({publish, Topic, Qos, Payload},
-            Channel = #channel{clientinfo = #{clientid := From,
+            Channel = #channel{clientinfo = ClientInfo
+                                          = #{clientid := From,
                                               mountpoint := Mountpoint}}) ->
-    Msg = emqx_message:make(From, Qos, Topic, Payload),
-    NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
-    emqx:publish(NMsg),
-    {reply, ok, Channel};
+    case is_acl_enabled(ClientInfo) andalso
+         emqx_access_control:check_acl(ClientInfo, publish, Topic) of
+        deny ->
+            {reply, {error, "ACL deny"}, Channel};
+        _ ->
+            Msg = emqx_message:make(From, Qos, Topic, Payload),
+            NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
+            emqx:publish(NMsg),
+            {reply, ok, Channel}
+    end;
 
 handle_call(kick, Channel) ->
     {shutdown, kicked, ok, Channel};
@@ -358,6 +372,10 @@ parse_topic_filters(TopicFilters) ->
 %%--------------------------------------------------------------------
 %%
 %%--------------------------------------------------------------------
+
+-compile({inline, [is_acl_enabled/1]}).
+is_acl_enabled(#{zone := Zone, is_superuser := IsSuperuser}) ->
+    (not IsSuperuser) andalso emqx_zone:enable_acl(Zone).
 
 wrap(Req) ->
      Req#{conn => pid_to_list(self())}.
