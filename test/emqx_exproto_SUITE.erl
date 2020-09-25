@@ -37,47 +37,35 @@ groups() ->
 
 %% @private
 metrics() ->
-    [ list_to_atom(X ++ "_" ++ Y)
-      || X <- ["python3", "java"], Y <- ["tcp", "ssl", "udp", "dtls"]].
+    [tcp, ssl, udp, dtls].
 
-init_per_group(GrpName, Config) ->
-    [Lang, LisType] = [list_to_atom(X) || X <- string:tokens(atom_to_list(GrpName), "_")],
-    put(grpname, {Lang, LisType}),
+init_per_group(GrpName, Cfg) ->
+    put(grpname, GrpName),
+    Svrs = emqx_exproto_echo_svr:start(),
     emqx_ct_helpers:start_apps([emqx_exproto], fun set_sepecial_cfg/1),
-    [{driver_type, Lang},
-     {listener_type, LisType} | Config].
+    emqx_logger:set_log_level(debug),
+    [{servers, Svrs}, {listener_type, GrpName} | Cfg].
 
-end_per_group(_, _) ->
-    emqx_ct_helpers:stop_apps([emqx_exproto]).
+end_per_group(_, Cfg) ->
+    emqx_ct_helpers:stop_apps([emqx_exproto]),
+    emqx_exproto_echo_svr:stop(proplists:get_value(servers, Cfg)).
 
 set_sepecial_cfg(emqx_exproto) ->
-    {Lang, LisType} = get(grpname),
-    Path = emqx_ct_helpers:deps_path(emqx_exproto, "example/"),
+    LisType = get(grpname),
     Listeners = application:get_env(emqx_exproto, listeners, []),
-    Driver = compile(Lang, Path),
     SockOpts = socketopts(LisType),
     UpgradeOpts = fun(Opts) ->
-                      Opts1 = lists:keydelete(driver, 1, Opts),
-                      Opts2 = lists:keydelete(tcp_options, 1, Opts1),
+                      Opts2 = lists:keydelete(tcp_options, 1, Opts),
                       Opts3 = lists:keydelete(ssl_options, 1, Opts2),
                       Opts4 = lists:keydelete(udp_options, 1, Opts3),
                       Opts5 = lists:keydelete(dtls_options, 1, Opts4),
-                      Driver ++ SockOpts ++ Opts5
+                      SockOpts ++ Opts5
                   end,
     NListeners = [{Proto, LisType, LisOn, UpgradeOpts(Opts)}
                   || {Proto, _Type, LisOn, Opts} <- Listeners],
     application:set_env(emqx_exproto, listeners, NListeners);
 set_sepecial_cfg(_App) ->
     ok.
-
-compile(java, Path) ->
-    ErlPortJar = emqx_ct_helpers:deps_path(erlport, "priv/java/_pkgs/erlport.jar"),
-    ct:pal(os:cmd(lists:concat(["cd ", Path, " && ",
-                                "rm -rf Main.class State.class && ",
-                                "javac -cp ", ErlPortJar, " Main.java"]))),
-    [{driver, [{type, java}, {path, Path}, {cbm, 'Main'}]}];
-compile(python3, Path) ->
-    [{driver, [{type, python3}, {path, Path}, {cbm, main}]}].
 
 %%--------------------------------------------------------------------
 %% Tests cases
@@ -96,12 +84,16 @@ t_echo(Cfg) ->
 
     {ok, Bin} = recv(Sock, byte_size(Bin), 5000),
 
+    %dbg:tracer(),dbg:p(all,call),
+    %dbg:tp(emqx_exproto_channel,x),
+    %dbg:tp(emqx_exproto_v_1_connection_adapter_client,x),
+    %dbg:tp(grpcbox_socket,terminate,x),
+
     %% pubsub echo
     emqx:subscribe(<<"t/#">>),
     emqx:publish(emqx_message:make(<<"t/dn">>, <<"echo">>)),
-    First = receive {_, _, X} -> X#message.payload end,
-    First = receive {_, _, Y} -> Y#message.payload end,
-
+    First = receive {_, _, X} -> X#message.payload after 5000 -> err1 end,
+    First = receive {_, _, Y} -> Y#message.payload after 5000 -> err2 end,
     close(Sock).
 
 %%--------------------------------------------------------------------
