@@ -66,15 +66,8 @@ start_server({Name, Port, SSLOptions}) ->
     end.
 
 stop_server({Name, Port, _SSLOptions}) ->
-    StopRet = emqx_exproto_sup:stop_grpc_server(Name),
-    case StopRet of
-        ok -> io:format("Stop ~s gRPC server on ~w successfully.~n",
-                        [Name, Port]);
-        {error, Reason} ->
-            io:format(standard_error, "Failed to stop ~s gRPC server on ~w - ~p~n.",
-                      [Name, Port, Reason])
-    end,
-    StopRet.
+    ok = emqx_exproto_sup:stop_grpc_server(Name),
+    io:format("Stop ~s gRPC server on ~w successfully.~n", [Name, Port]).
 
 start_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
