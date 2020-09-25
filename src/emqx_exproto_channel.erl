@@ -41,20 +41,22 @@
 -export_type([channel/0]).
 
 -record(channel, {
-          %% Driver name
-          driver :: atom(),
+          %% gRPC channel options
+          gcli :: map(),
           %% Conn info
           conninfo :: emqx_types:conninfo(),
           %% Client info from `register` function
           clientinfo :: maybe(map()),
           %% Registered
-          registered = false :: boolean(),
+          authorized = false :: boolean(),
           %% Connection state
           conn_state :: conn_state(),
           %% Subscription
           subscriptions = #{},
-          %% Driver level state
-          state :: any()
+          %% Request queue
+          rqueue = queue:new(),
+          %% Inflight function name
+          inflight = undefined
          }).
 
 -opaque(channel() :: #channel{}).
@@ -130,20 +132,42 @@ stats(#channel{subscriptions = Subs}) ->
 %%--------------------------------------------------------------------
 
 -spec(init(emqx_exproto_types:conninfo(), proplists:proplist()) -> channel()).
-init(ConnInfo, Options) ->
-    Driver = proplists:get_value(driver, Options),
-    case cb_init(ConnInfo, Driver) of
-            {ok, DState} ->
-                NConnInfo = default_conninfo(ConnInfo),
-                ClientInfo = default_clientinfo(ConnInfo),
-                #channel{driver = Driver,
-                         state = DState,
-                         conninfo = NConnInfo,
-                         clientinfo = ClientInfo,
-                         conn_state = connected};
-            {error, Reason} ->
-                exit({init_channel_failed, Reason})
-    end.
+init(ConnInfo = #{socktype := Socktype,
+                  peername := Peername,
+                  sockname := Sockname,
+                  peercert := Peercert}, Options) ->
+    GRpcChann = proplists:get_value(handler, Options),
+    NConnInfo = default_conninfo(ConnInfo),
+    ClientInfo = default_clientinfo(ConnInfo),
+    Channel = #channel{gcli = #{channel => GRpcChann},
+                       conninfo = NConnInfo,
+                       clientinfo = ClientInfo,
+                       conn_state = connecting},
+
+    Req = #{conninfo =>
+            peercert(Peercert,
+                     #{socktype => socktype(Socktype),
+                       peername => address(Peername),
+                       sockname => address(Sockname)})},
+    try_dispatch(on_socket_created, wrap(Req), Channel).
+
+%% @private
+peercert(nossl, ConnInfo) ->
+    ConnInfo;
+peercert(Peercert, ConnInfo) ->
+    ConnInfo#{peercert =>
+              #{cn => esockd_peercert:common_name(Peercert),
+                dn => esockd_peercert:subject(Peercert)}}.
+
+%% @private
+socktype(tcp) -> 'TCP';
+socktype(ssl) -> 'SSL';
+socktype(udp) -> 'UDP';
+socktype(dtls) -> 'DTLS'.
+
+%% @private
+address({Host, Port}) ->
+    #{host => inet:ntoa(Host), port => Port}.
 
 %%--------------------------------------------------------------------
 %% Handle incoming packet
@@ -153,24 +177,24 @@ init(ConnInfo, Options) ->
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_in(Data, Channel) ->
-    case cb_received(Data, Channel) of
-        {ok, NChannel} ->
-            {ok, NChannel};
-        {error, Reason} ->
-            {shutdown, Reason, Channel}
-    end.
+    Req = #{bytes => Data},
+    {ok, try_dispatch(on_received_bytes, wrap(Req), Channel)}.
 
 -spec(handle_deliver(list(emqx_types:deliver()), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
 handle_deliver(Delivers, Channel) ->
     %% TODO: ?? Nack delivers from shared subscriptions
-    case cb_deliver(Delivers, Channel) of
-        {ok, NChannel} ->
-            {ok, NChannel};
-        {error, Reason} ->
-            {shutdown, Reason, Channel}
-    end.
+    Msgs = [ #{node => atom_to_binary(node(), utf8),
+               id => hexstr(emqx_message:id(Msg)),
+               qos => emqx_message:qos(Msg),
+               from => fmt_from(emqx_message:from(Msg)),
+               topic => emqx_message:topic(Msg),
+               payload => emqx_message:payload(Msg),
+               timestamp => emqx_message:timestamp(Msg)
+              } || {_, _, Msg} <- Delivers],
+    Req = #{messages => Msgs},
+    {ok, try_dispatch(on_received_messages, wrap(Req), Channel)}.
 
 -spec(handle_timeout(reference(), Msg :: term(), channel())
       -> {ok, channel()}
@@ -181,7 +205,67 @@ handle_timeout(_TRef, Msg, Channel) ->
 
 -spec(handle_call(any(), channel())
      -> {reply, Reply :: term(), channel()}
+      | {reply, Reply :: term(), replies(), channel()}
       | {shutdown, Reason :: term(), Reply :: term(), channel()}).
+
+handle_call({send, Data}, Channel) ->
+    {reply, ok, [{outgoing, Data}], Channel};
+
+handle_call(close, Channel) ->
+    {reply, ok, [{close, normal}], Channel};
+
+handle_call({auth, ClientInfo, _Password}, Channel = #channel{authorized = true}) ->
+    ?LOG(wanring, "Duplicated authorized command, dropped ~p", [ClientInfo]),
+    {ok, {error, already_authorized}, Channel};
+handle_call({auth, ClientInfo0, Password},
+            Channel = #channel{conninfo = ConnInfo,
+                               clientinfo = ClientInfo}) ->
+    ClientInfo1 = maybe_assign_clientid(ClientInfo0),
+    ClientInfo2 = enrich_clientinfo(ClientInfo1, ClientInfo),
+    NConnInfo = enrich_conninfo(ClientInfo2, ConnInfo),
+
+    Channel1 = Channel#channel{conninfo = NConnInfo,
+                               clientinfo = ClientInfo2},
+
+    #{clientid := ClientId, username := Username} = ClientInfo2,
+
+    case emqx_access_control:authenticate(ClientInfo2#{password => Password}) of
+        {ok, AuthResult} ->
+            is_anonymous(AuthResult) andalso
+                emqx_metrics:inc('client.auth.anonymous'),
+            NClientInfo = maps:merge(ClientInfo2, AuthResult),
+            NChannel = Channel1#channel{authorized = true,
+                                        clientinfo = NClientInfo},
+            case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
+                {ok, _Session} ->
+                    {reply, ok, [{event, authorized}], NChannel};
+                {error, Reason} ->
+                    ?LOG(warning, "Client ~s (Username: '~s') open session failed for ~0p",
+                         [ClientId, Username, Reason]),
+                    {shutdown, Reason, {error, Reason}, NChannel}
+            end;
+        {error, Reason} ->
+            ?LOG(warning, "Client ~s (Username: '~s') login failed for ~0p",
+                 [ClientId, Username, Reason]),
+            {shutdown, Reason, {error, Reason}, Channel1}
+    end;
+
+handle_call({subscribe, TopicFilter, Qos}, Channel) ->
+    {ok, NChannel} = do_subscribe([{TopicFilter, #{qos => Qos}}], Channel),
+    {reply, ok, NChannel};
+
+handle_call({unsubscribe, TopicFilter}, Channel) ->
+    {ok, NChannel} = do_unsubscribe([{TopicFilter, #{}}], Channel),
+    {reply, ok, NChannel};
+
+handle_call({publish, Topic, Qos, Payload},
+            Channel = #channel{clientinfo = #{clientid := From,
+                                              mountpoint := Mountpoint}}) ->
+    Msg = emqx_message:make(From, Qos, Topic, Payload),
+    NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
+    emqx:publish(NMsg),
+    {reply, ok, Channel};
+
 handle_call(kick, Channel) ->
     {shutdown, kicked, ok, Channel};
 
@@ -193,41 +277,6 @@ handle_call(Req, Channel) ->
      -> {ok, channel()}
       | {ok, replies(), channel()}
       | {shutdown, Reason :: term(), channel()}).
-handle_cast({send, Data}, Channel) ->
-    {ok, [{outgoing, Data}], Channel};
-
-handle_cast(close, Channel) ->
-    {ok, [{close, normal}], Channel};
-
-handle_cast({register, ClientInfo}, Channel = #channel{registered = true}) ->
-    ?WARN("Duplicated register command, dropped ~p", [ClientInfo]),
-    {ok, Channel};
-handle_cast({register, ClientInfo0}, Channel = #channel{conninfo = ConnInfo,
-                                                        clientinfo = ClientInfo}) ->
-    ClientInfo1 = maybe_assign_clientid(ClientInfo0),
-    NConnInfo = enrich_conninfo(ClientInfo1, ConnInfo),
-    NClientInfo = enrich_clientinfo(ClientInfo1, ClientInfo),
-    case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
-        {ok, _Session} ->
-            NChannel = Channel#channel{registered = true,
-                                       conninfo = NConnInfo,
-                                       clientinfo = NClientInfo},
-            {ok, [{event, registered}], NChannel};
-        {error, Reason} ->
-            ?ERROR("Register failed, reason: ~p", [Reason]),
-            {shutdown, Reason, {error, Reason}, Channel}
-    end;
-
-handle_cast({subscribe, TopicFilter, Qos}, Channel) ->
-    do_subscribe([{TopicFilter, #{qos => Qos}}], Channel);
-
-handle_cast({unsubscribe, TopicFilter}, Channel) ->
-    do_unsubscribe([{TopicFilter, #{}}], Channel);
-
-handle_cast({publish, Msg}, Channel) ->
-    emqx:publish(enrich_msg(Msg, Channel)),
-    {ok, Channel};
-
 handle_cast(Req, Channel) ->
     ?WARN("Unexpected call: ~p", [Req]),
     {ok, Channel}.
@@ -243,13 +292,28 @@ handle_info({unsubscribe, TopicFilters}, Channel) ->
 
 handle_info({sock_closed, Reason}, Channel) ->
     {shutdown, {sock_closed, Reason}, Channel};
+
+handle_info({hreply, on_socket_created, {ok, _}}, Channel) ->
+    {ok, try_dispatch(Channel#channel{inflight = undefined, conn_state = connected})};
+handle_info({hreply, FunName, {ok, _}}, Channel)
+  when FunName == on_socket_closed;
+       FunName == on_received_bytes;
+       FunName == on_received_messages ->
+    {ok, try_dispatch(Channel#channel{inflight = undefined})};
+handle_info({hreply, FunName, {error, Reason}}, Channel) ->
+    {shutdown, {error, {FunName, Reason}}, Channel};
+
 handle_info(Info, Channel) ->
     ?WARN("Unexpected info: ~p", [Info]),
     {ok, Channel}.
 
--spec(terminate(any(), channel()) -> ok).
+-spec(terminate(any(), channel()) -> channel()).
 terminate(Reason, Channel) ->
-    cb_terminated(Reason, Channel), ok.
+    Req = #{reason => stringfy(Reason)},
+    try_dispatch(on_socket_closed, wrap(Req), Channel).
+
+is_anonymous(#{anonymous := true}) -> true;
+is_anonymous(_AuthResult)          -> false.
 
 %%--------------------------------------------------------------------
 %% Sub/UnSub
@@ -292,36 +356,28 @@ parse_topic_filters(TopicFilters) ->
     lists:map(fun emqx_topic:parse/1, TopicFilters).
 
 %%--------------------------------------------------------------------
-%% Cbs for driver
+%%
 %%--------------------------------------------------------------------
 
-cb_init(ConnInfo, Driver) ->
-    Args = [self(), emqx_exproto_types:serialize(conninfo, ConnInfo)],
-    emqx_exproto_driver_mngr:call(Driver, {'init', Args}).
+wrap(Req) ->
+     Req#{conn => pid_to_list(self())}.
 
-cb_received(Data, Channel = #channel{state = DState}) ->
-    Args = [self(), Data, DState],
-    do_call_cb('received', Args, Channel).
-
-cb_terminated(Reason, Channel = #channel{state = DState}) ->
-    Args = [self(), stringfy(Reason), DState],
-    do_call_cb('terminated', Args, Channel).
-
-cb_deliver(Delivers, Channel = #channel{state = DState}) ->
-    Msgs = [emqx_exproto_types:serialize(message, Msg) || {_, _, Msg} <- Delivers],
-    Args = [self(), Msgs, DState],
-    do_call_cb('deliver', Args, Channel).
-
-%% @private
-do_call_cb(Fun, Args, Channel = #channel{driver = D}) ->
-    case emqx_exproto_driver_mngr:call(D, {Fun, Args}) of
-        ok ->
-            {ok, Channel};
-        {ok, NDState} ->
-            {ok, Channel#channel{state = NDState}};
-        {error, Reason} ->
-            {error, Reason}
+try_dispatch(Channel = #channel{rqueue = Queue,
+                                inflight = undefined,
+                                gcli = GClient}) ->
+    case queue:out(Queue) of
+        {empty, _} ->
+            Channel;
+        {{value, {FunName, Req}}, NQueue} ->
+            emqx_exproto_gcli:async_call(FunName, Req, GClient),
+            Channel#channel{inflight = FunName, rqueue = NQueue}
     end.
+
+try_dispatch(FunName, Req, Channel = #channel{inflight = undefined, gcli = GClient}) ->
+    emqx_exproto_gcli:async_call(FunName, Req, GClient),
+    Channel#channel{inflight = FunName};
+try_dispatch(FunName, Req, Channel = #channel{rqueue = Queue}) ->
+    Channel#channel{rqueue = queue:in({FunName, Req}, Queue)}.
 
 %%--------------------------------------------------------------------
 %% Format
@@ -333,13 +389,6 @@ maybe_assign_clientid(ClientInfo) ->
             ClientInfo#{clientid => emqx_guid:to_base62(emqx_guid:gen())};
         _ ->
             ClientInfo
-    end.
-
-enrich_msg(Msg, #channel{clientinfo = ClientInfo = #{mountpoint := Mountpoint}}) ->
-    NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
-    case maps:get(clientid, ClientInfo, undefined) of
-        undefined -> NMsg;
-        ClientId -> NMsg#message{from = ClientId}
     end.
 
 enrich_conninfo(InClientInfo, ConnInfo) ->
@@ -363,12 +412,12 @@ default_conninfo(ConnInfo) ->
               expiry_interval => 0}.
 
 default_clientinfo(#{peername := {PeerHost, _},
-                      sockname := {_, SockPort}}) ->
-    #{zone         => undefined,
+                     sockname := {_, SockPort}}) ->
+    #{zone         => external,
       protocol     => undefined,
       peerhost     => PeerHost,
       sockport     => SockPort,
-      clientid     => default_clientid(),
+      clientid     => undefined,
       username     => undefined,
       is_bridge    => false,
       is_superuser => false,
@@ -382,5 +431,9 @@ lowcase_atom(undefined) ->
 lowcase_atom(S) ->
     binary_to_atom(string:lowercase(S), utf8).
 
-default_clientid() ->
-    <<"exproto_client_", (list_to_binary(pid_to_list(self())))/binary>>.
+hexstr(Bin) ->
+    [io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Bin].
+
+fmt_from(undefined) -> <<>>;
+fmt_from(Bin) when is_binary(Bin) -> Bin;
+fmt_from(T) -> stringfy(T).
