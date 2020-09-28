@@ -422,16 +422,16 @@ handle_msg({close, Reason}, State) ->
     ?LOG(debug, "Force to close the socket due to ~p", [Reason]),
     handle_info({sock_closed, Reason}, close_socket(State));
 
-handle_msg({event, authorized}, State = #state{channel = Channel}) ->
+handle_msg({event, connected}, State = #state{channel = Channel}) ->
     ClientId = emqx_exproto_channel:info(clientid, Channel),
     emqx_cm:register_channel(ClientId, info(State), stats(State));
 
-%handle_msg({event, disconnected}, State = #state{channel = Channel}) ->
-%    ClientId = emqx_exproto_channel:info(clientid, Channel),
-%    emqx_cm:set_chan_info(ClientId, info(State)),
-%    emqx_cm:connection_closed(ClientId),
-%    {ok, State};
-%
+handle_msg({event, disconnected}, State = #state{channel = Channel}) ->
+    ClientId = emqx_exproto_channel:info(clientid, Channel),
+    emqx_cm:set_chan_info(ClientId, info(State)),
+    emqx_cm:connection_closed(ClientId),
+    {ok, State};
+
 %handle_msg({event, _Other}, State = #state{channel = Channel}) ->
 %    ClientId = emqx_exproto_channel:info(clientid, Channel),
 %    emqx_cm:set_chan_info(ClientId, info(State)),
@@ -500,7 +500,18 @@ handle_timeout(_TRef, limit_timeout, State) ->
                          limit_timer = undefined
                         },
     handle_info(activate_socket, NState);
-
+handle_timeout(TRef, keepalive, State = #state{socket = Socket,
+                                               channel = Channel})->
+    case emqx_exproto_channel:info(conn_state, Channel) of
+        disconnected -> {ok, State};
+        _ ->
+            case esockd_getstat(Socket, [recv_oct]) of
+                {ok, [{recv_oct, RecvOct}]} ->
+                    handle_timeout(TRef, {keepalive, RecvOct}, State);
+                {error, Reason} ->
+                    handle_info({sock_error, Reason}, State)
+            end
+    end;
 handle_timeout(_TRef, emit_stats, State =
                #state{channel = Channel}) ->
     ClientId = emqx_exproto_channel:info(clientid, Channel),
