@@ -89,13 +89,13 @@ stop([ChannPid, SvrPid]) ->
 %%--------------------------------------------------------------------
 
 -spec on_socket_created(ctx:ctx(), emqx_exproto_pb:created_socket_request()) ->
-    {ok, emqx_exproto_pb:bool_result(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
+    {ok, emqx_exproto_pb:empty_success(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
 on_socket_created(Ctx, Req) ->
     io:format("~p: ~0p~n", [?FUNCTION_NAME, Req]),
     {ok, #{}, Ctx}.
 
 -spec on_received_bytes(ctx:ctx(), emqx_exproto_pb:received_bytes_request()) ->
-    {ok, emqx_exproto_pb:bool_result(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
+    {ok, emqx_exproto_pb:empty_success(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
 on_received_bytes(Ctx, Req = #{conn := Conn, bytes := Bytes}) ->
     io:format("~p: ~0p~n", [?FUNCTION_NAME, Req]),
     #{<<"type">> := Type} = Params = emqx_json:decode(Bytes, [return_maps]),
@@ -111,11 +111,11 @@ on_socket_closed(Ctx, Req) ->
 on_timer_timeout(Ctx, Req = #{conn := Conn, type := 'KEEPALIVE'}) ->
     io:format("~p: ~0p~n", [?FUNCTION_NAME, Req]),
     handle_out(Conn, ?TYPE_DISCONNECT),
-    ?close(Conn),
+    ?close(#{conn => Conn}),
     {ok, #{}, Ctx}.
 
 -spec on_received_messages(ctx:ctx(), emqx_exproto_pb:received_messages_request()) ->
-    {ok, emqx_exproto_pb:bool_result(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
+    {ok, emqx_exproto_pb:empty_success(), ctx:ctx()} | grpcbox_stream:grpc_error_response().
 on_received_messages(Ctx, Req = #{conn := Conn, messages := Messages}) ->
     io:format("~p: ~0p~n", [?FUNCTION_NAME, Req]),
     lists:foreach(fun(Message) ->
@@ -150,7 +150,7 @@ on_received_messages(Ctx, Req = #{conn := Conn, messages := Messages}) ->
 handle_in(Conn, ?TYPE_CONNECT, #{<<"clientinfo">> := ClientInfo, <<"password">> := Password}) ->
     NClientInfo = maps:from_list([{binary_to_atom(K, utf8), V} || {K, V} <- maps:to_list(ClientInfo)]),
     case ?authenticate(#{conn => Conn, clientinfo => NClientInfo, password => Password}) of
-        {ok, #{result := true}, _} ->
+        {ok, #{code := 'SUCCESS'}, _} ->
             case maps:get(keepalive, NClientInfo, 0) of
                 0 -> ok;
                 Intv ->
@@ -160,27 +160,27 @@ handle_in(Conn, ?TYPE_CONNECT, #{<<"clientinfo">> := ClientInfo, <<"password">> 
             handle_out(Conn, ?TYPE_CONNACK, 0);
         _ ->
             handle_out(Conn, ?TYPE_CONNACK, 1),
-            ?close(Conn)
+            ?close(#{conn => Conn})
     end;
 handle_in(Conn, ?TYPE_PUBLISH, #{<<"topic">> := Topic,
                                  <<"qos">> := Qos,
                                  <<"payload">> := Payload}) ->
     case ?publish(#{conn => Conn, topic => Topic, qos => Qos, payload => Payload}) of
-        {ok, #{result := true}, _} ->
+        {ok, #{code := 'SUCCESS'}, _} ->
             handle_out(Conn, ?TYPE_PUBACK, 0);
         _ ->
             handle_out(Conn, ?TYPE_PUBACK, 1)
     end;
 handle_in(Conn, ?TYPE_SUBSCRIBE, #{<<"qos">> := Qos, <<"topic">> := Topic}) ->
     case ?subscribe(#{conn => Conn, topic => Topic, qos => Qos}) of
-        {ok, #{result := true}, _} ->
+        {ok, #{code := 'SUCCESS'}, _} ->
             handle_out(Conn, ?TYPE_SUBACK, 0);
         _ ->
             handle_out(Conn, ?TYPE_SUBACK, 1)
     end;
 handle_in(Conn, ?TYPE_UNSUBSCRIBE, #{<<"topic">> := Topic}) ->
     case ?unsubscribe(#{conn => Conn, topic => Topic}) of
-        {ok, #{result := true}, _} ->
+        {ok, #{code := 'SUCCESS'}, _} ->
             handle_out(Conn, ?TYPE_UNSUBACK, 0);
         _ ->
             handle_out(Conn, ?TYPE_UNSUBACK, 1)
