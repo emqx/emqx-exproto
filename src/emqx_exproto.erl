@@ -112,8 +112,10 @@ stop_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
     StopRet = stop_listener(LisType, Name, ListenOn, Opts),
     case StopRet of
-        ok -> io:format("Stop ~s listener on ~s successfully.~n",
-                        [Name, format(ListenOn)]);
+        ok ->
+            _ = emqx_exproto_sup:stop_grpc_client_channel(Name),
+            io:format("Stop ~s listener on ~s successfully.~n",
+                      [Name, format(ListenOn)]);
         {error, Reason} ->
             io:format(standard_error, "Failed to stop ~s listener on ~s - ~p~n.",
                       [Name, format(ListenOn), Reason])

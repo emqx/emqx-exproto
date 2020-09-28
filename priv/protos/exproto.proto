@@ -32,6 +32,8 @@ service ConnectionAdapter {
 
   rpc Authenticate(AuthenticateRequest) returns (BoolResult) {};
 
+  rpc StartTimer(TimerRequest) returns (BoolResult) {};
+
   //rpc Register(RegisterRequest) returns (BoolResult) {};
 
   // -- pub/sub layer
@@ -54,6 +56,8 @@ service ConnectionHandler {
   rpc OnReceivedBytes(ReceivedBytesRequest) returns (EmptySuccess) {};
 
   // -- pub/sub layer
+
+  rpc OnTimerTimeout(TimerTimeoutRequest) returns (EmptySuccess) {};
 
   rpc OnReceivedMessages(ReceivedMessagesRequest) returns (EmptySuccess) {};
 }
@@ -87,6 +91,20 @@ message AuthenticateRequest {
   ClientInfo clientinfo = 2;
 
   string password = 3;
+}
+
+message TimerRequest {
+
+  string conn = 1;
+
+  TimerType type = 2;
+
+  uint32 interval = 3;
+}
+
+enum TimerType {
+
+  KEEPALIVE = 1;
 }
 
 message PublishRequest {
@@ -128,6 +146,13 @@ message ReceivedBytesRequest {
   string conn = 1;
 
   bytes bytes = 2;
+}
+
+message TimerTimeoutRequest {
+
+  string conn = 1;
+
+  TimerType type = 2;
 }
 
 message SocketClosedRequest {
@@ -195,10 +220,6 @@ message ClientInfo {
   optional string username = 4;
 
   optional string mountpoint = 5;
-
-  optional uint32 keepalive = 6;
-
-  optional uint32 lifetime = 7;
 }
 
 message Message {
