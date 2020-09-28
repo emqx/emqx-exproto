@@ -16,6 +16,7 @@
 
 -module(emqx_exproto_channel).
 
+-include("emqx_exproto.hrl").
 -include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("emqx/include/types.hrl").
@@ -47,8 +48,6 @@
           conninfo :: emqx_types:conninfo(),
           %% Client info from `register` function
           clientinfo :: maybe(map()),
-          %% Registered
-          authorized = false :: boolean(),
           %% Connection state
           conn_state :: conn_state(),
           %% Subscription
@@ -60,7 +59,9 @@
           %% Keepalive
           keepalive :: maybe(emqx_keepalive:keepalive()),
           %% Timers
-          timers ::  #{atom() => disabled | maybe(reference())}
+          timers ::  #{atom() => disabled | maybe(reference())},
+          %% Closed reason
+          closed_reason = undefined
          }).
 
 -opaque(channel() :: #channel{}).
@@ -74,7 +75,8 @@
 -type(replies() :: emqx_types:packet() | reply() | [reply()]).
 
 -define(TIMER_TABLE, #{
-          alive_timer  => keepalive
+          alive_timer => keepalive,
+          force_timer => force_close
          }).
 
 -define(INFO_KEYS, [conninfo, conn_state, clientinfo, session, will_msg]).
@@ -230,6 +232,10 @@ handle_timeout(_TRef, {keepalive, StatVal},
             Req = #{type => 'KEEPALIVE'},
             {ok, try_dispatch(on_timer_timeout, wrap(Req), Channel)}
     end;
+
+handle_timeout(_TRef, force_close, Channel = #channel{closed_reason = Reason}) ->
+    {shutdown, {error, {force_closed, Reason}}, Channel};
+
 handle_timeout(_TRef, Msg, Channel) ->
     ?WARN("Unexpected timeout: ~p", [Msg]),
     {ok, Channel}.
@@ -242,12 +248,14 @@ handle_timeout(_TRef, Msg, Channel) ->
 handle_call({send, Data}, Channel) ->
     {reply, ok, [{outgoing, Data}], Channel};
 
-handle_call(close, Channel) ->
+handle_call(close, Channel = #channel{conn_state = connected}) ->
     {reply, ok, [{event, disconnected}, {close, normal}], Channel};
+handle_call(close, Channel) ->
+    {reply, ok, [{close, normal}], Channel};
 
-handle_call({auth, ClientInfo, _Password}, Channel = #channel{authorized = true}) ->
+handle_call({auth, ClientInfo, _Password}, Channel = #channel{conn_state = connected}) ->
     ?LOG(warning, "Duplicated authorized command, dropped ~p", [ClientInfo]),
-    {ok, {error, already_authorized}, Channel};
+    {ok, {error, ?RESP_PERMISSION_DENY, <<"Duplicated authenticate command">>}, Channel};
 handle_call({auth, ClientInfo0, Password},
             Channel = #channel{conninfo = ConnInfo,
                                clientinfo = ClientInfo}) ->
@@ -265,8 +273,7 @@ handle_call({auth, ClientInfo0, Password},
             is_anonymous(AuthResult) andalso
                 emqx_metrics:inc('client.auth.anonymous'),
             NClientInfo = maps:merge(ClientInfo1, AuthResult),
-            NChannel = Channel1#channel{authorized = true,
-                                        clientinfo = NClientInfo},
+            NChannel = Channel1#channel{clientinfo = NClientInfo},
             case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
                 {ok, _Session} ->
                     ?LOG(debug, "Client ~s (Username: '~s') authorized successfully!",
@@ -275,12 +282,12 @@ handle_call({auth, ClientInfo0, Password},
                 {error, Reason} ->
                     ?LOG(warning, "Client ~s (Username: '~s') open session failed for ~0p",
                          [ClientId, Username, Reason]),
-                    {reply, {error, Reason}, Channel}
+                    {reply, {error, ?RESP_PERMISSION_DENY, Reason}, Channel}
             end;
         {error, Reason} ->
             ?LOG(warning, "Client ~s (Username: '~s') login failed for ~0p",
                  [ClientId, Username, Reason]),
-            {reply, {error, Reason}, Channel}
+            {reply, {error, ?RESP_PERMISSION_DENY, Reason}, Channel}
     end;
 
 handle_call({start_timer, keepalive, Interval},
@@ -294,28 +301,33 @@ handle_call({start_timer, keepalive, Interval},
     {reply, ok, ensure_keepalive(NChannel)};
 
 handle_call({subscribe, TopicFilter, Qos},
-            Channel = #channel{clientinfo = ClientInfo}) ->
+            Channel = #channel{
+                         conn_state = connected,
+                         clientinfo = ClientInfo}) ->
     case is_acl_enabled(ClientInfo) andalso
          emqx_access_control:check_acl(ClientInfo, subscribe, TopicFilter) of
         deny ->
-            {reply, {error, "ACL deny"}, Channel};
+            {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->
             {ok, NChannel} = do_subscribe([{TopicFilter, #{qos => Qos}}], Channel),
             {reply, ok, NChannel}
     end;
 
-handle_call({unsubscribe, TopicFilter}, Channel) ->
+handle_call({unsubscribe, TopicFilter},
+            Channel = #channel{conn_state = connected}) ->
     {ok, NChannel} = do_unsubscribe([{TopicFilter, #{}}], Channel),
     {reply, ok, NChannel};
 
 handle_call({publish, Topic, Qos, Payload},
-            Channel = #channel{clientinfo = ClientInfo
-                                          = #{clientid := From,
-                                              mountpoint := Mountpoint}}) ->
+            Channel = #channel{
+                         conn_state = connected,
+                         clientinfo = ClientInfo
+                                    = #{clientid := From,
+                                        mountpoint := Mountpoint}}) ->
     case is_acl_enabled(ClientInfo) andalso
          emqx_access_control:check_acl(ClientInfo, publish, Topic) of
         deny ->
-            {reply, {error, "ACL deny"}, Channel};
+            {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->
             Msg = emqx_message:make(From, Qos, Topic, Payload),
             NMsg = emqx_mountpoint:mount(Mountpoint, Msg),
@@ -327,8 +339,8 @@ handle_call(kick, Channel) ->
     {shutdown, kicked, ok, Channel};
 
 handle_call(Req, Channel) ->
-    ?WARN("Unexpected call: ~p", [Req]),
-    {reply, ok, Channel}.
+    ?LOG(warning, "Unexpected call: ~p", [Req]),
+    {reply, {error, unexpected_call}, Channel}.
 
 -spec(handle_cast(any(), channel())
      -> {ok, channel()}
@@ -347,28 +359,37 @@ handle_info({subscribe, TopicFilters}, Channel) ->
 handle_info({unsubscribe, TopicFilters}, Channel) ->
     do_unsubscribe(TopicFilters, Channel);
 
-handle_info({sock_closed, Reason}, Channel) ->
-    {shutdown, {sock_closed, Reason}, Channel};
+handle_info({sock_closed, Reason},
+            Channel = #channel{rqueue = Queue, inflight = Inflight}) ->
+    case queue:len(Queue) =:= 0
+         andalso Inflight =:= undefined of
+        true ->
+            {shutdown, {sock_closed, Reason}, Channel};
+        _ ->
+            %% delayed close process for flushing all callback funcs to gRPC server
+            NChannel = Channel#channel{closed_reason = {sock_closed, Reason}},
+            {ok, ensure_disconnected({sock_closed, Reason}, NChannel)}
+    end;
 
 handle_info({hreply, on_socket_created, {ok, _}}, Channel) ->
-    {ok, try_dispatch(Channel#channel{inflight = undefined, conn_state = connected})};
+    dispatch_or_close_process(Channel#channel{inflight = undefined});
 handle_info({hreply, FunName, {ok, _}}, Channel)
   when FunName == on_socket_closed;
        FunName == on_received_bytes;
-       FunName == on_received_messages ->
-    {ok, try_dispatch(Channel#channel{inflight = undefined})};
+       FunName == on_received_messages;
+       FunName == on_timer_timeout ->
+    dispatch_or_close_process(Channel#channel{inflight = undefined});
 handle_info({hreply, FunName, {error, Reason}}, Channel) ->
     {shutdown, {error, {FunName, Reason}}, Channel};
 
 handle_info(Info, Channel) ->
-    ?WARN("Unexpected info: ~p", [Info]),
+    ?LOG(warning, "Unexpected info: ~p", [Info]),
     {ok, Channel}.
 
 -spec(terminate(any(), channel()) -> channel()).
 terminate(Reason, Channel) ->
-    NChannel = ensure_disconnected(Reason, Channel),
     Req = #{reason => stringfy(Reason)},
-    try_dispatch(on_socket_closed, wrap(Req), NChannel).
+    try_dispatch(on_socket_closed, wrap(Req), Channel).
 
 is_anonymous(#{anonymous := true}) -> true;
 is_anonymous(_AuthResult)          -> false.
@@ -447,17 +468,20 @@ ensure_connected(Channel = #channel{conninfo = ConnInfo,
                     conn_state = connected
                    }.
 
-ensure_disconnected(Reason, Channel = #channel{conninfo = ConnInfo,
-                                               clientinfo = ClientInfo}) ->
+ensure_disconnected(Reason, Channel = #channel{
+                                         conn_state = connected,
+                                         conninfo = ConnInfo,
+                                         clientinfo = ClientInfo}) ->
     NConnInfo = ConnInfo#{disconnected_at => erlang:system_time(millisecond)},
     ok = run_hooks('client.disconnected', [ClientInfo, Reason, NConnInfo]),
+    Channel#channel{conninfo = NConnInfo, conn_state = disconnected};
+
+ensure_disconnected(_Reason, Channel = #channel{conninfo = ConnInfo}) ->
+    NConnInfo = ConnInfo#{disconnected_at => erlang:system_time(millisecond)},
     Channel#channel{conninfo = NConnInfo, conn_state = disconnected}.
 
 run_hooks(Name, Args) ->
     ok = emqx_metrics:inc(Name), emqx_hooks:run(Name, Args).
-
-run_hooks(Name, Args, Acc) ->
-    ok = emqx_metrics:inc(Name), emqx_hooks:run_fold(Name, Args, Acc).
 
 %%--------------------------------------------------------------------
 %% Enrich Keepalive
@@ -495,6 +519,8 @@ reset_timer(Name, Channel) ->
 clean_timer(Name, Channel = #channel{timers = Timers}) ->
     Channel#channel{timers = maps:remove(Name, Timers)}.
 
+interval(force_timer, _) ->
+    15000;
 interval(alive_timer, #channel{keepalive = Keepalive}) ->
     emqx_keepalive:info(interval, Keepalive).
 
@@ -505,15 +531,21 @@ interval(alive_timer, #channel{keepalive = Keepalive}) ->
 wrap(Req) ->
      Req#{conn => pid_to_list(self())}.
 
-try_dispatch(Channel = #channel{rqueue = Queue,
-                                inflight = undefined,
-                                gcli = GClient}) ->
+dispatch_or_close_process(Channel = #channel{
+                                       rqueue = Queue,
+                                       inflight = undefined,
+                                       gcli = GClient}) ->
     case queue:out(Queue) of
         {empty, _} ->
-            Channel;
+            case Channel#channel.conn_state of
+                disconnected ->
+                    {shutdown, Channel#channel.closed_reason, Channel};
+                _ ->
+                    {ok, Channel}
+            end;
         {{value, {FunName, Req}}, NQueue} ->
             emqx_exproto_gcli:async_call(FunName, Req, GClient),
-            Channel#channel{inflight = FunName, rqueue = NQueue}
+            {ok, Channel#channel{inflight = FunName, rqueue = NQueue}}
     end.
 
 try_dispatch(FunName, Req, Channel = #channel{inflight = undefined, gcli = GClient}) ->

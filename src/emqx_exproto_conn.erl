@@ -173,8 +173,10 @@ esockd_wait({esockd_transport, Sock}) ->
         R = {error, _} -> R
     end.
 
-esockd_close({udp, _SockPid, Sock}) ->
-    gen_udp:close(Sock);
+esockd_close({udp, _SockPid, _Sock}) ->
+    %% nothing to do for udp socket
+    %%gen_udp:close(Sock);
+    ok;
 esockd_close({esockd_transport, Sock}) ->
     esockd_transport:fast_close(Sock).
 
