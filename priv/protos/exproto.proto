@@ -34,8 +34,6 @@ service ConnectionAdapter {
 
   rpc StartTimer(TimerRequest) returns (CodeResponse) {};
 
-  //rpc Register(RegisterRequest) returns (CodeResponse) {};
-
   // -- pub/sub layer
 
   rpc Publish(PublishRequest) returns (CodeResponse) {};
