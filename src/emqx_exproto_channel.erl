@@ -234,7 +234,7 @@ handle_timeout(_TRef, {keepalive, StatVal},
     end;
 
 handle_timeout(_TRef, force_close, Channel = #channel{closed_reason = Reason}) ->
-    {shutdown, {error, {force_closed, Reason}}, Channel};
+    {shutdown, {error, {force_close, Reason}}, Channel};
 
 handle_timeout(_TRef, Msg, Channel) ->
     ?WARN("Unexpected timeout: ~p", [Msg]),
@@ -367,8 +367,9 @@ handle_info({sock_closed, Reason},
             {shutdown, {sock_closed, Reason}, Channel};
         _ ->
             %% delayed close process for flushing all callback funcs to gRPC server
-            NChannel = Channel#channel{closed_reason = {sock_closed, Reason}},
-            {ok, ensure_disconnected({sock_closed, Reason}, NChannel)}
+            Channel1 = Channel#channel{closed_reason = {sock_closed, Reason}},
+            Channel2 = ensure_timer(force_timer, Channel1),
+            {ok, ensure_disconnected({sock_closed, Reason}, Channel2)}
     end;
 
 handle_info({hreply, on_socket_created, {ok, _}}, Channel) ->
@@ -494,11 +495,6 @@ ensure_keepalive_timer(Interval, Channel) when Interval =< 0 ->
 ensure_keepalive_timer(Interval, Channel) ->
     Keepalive = emqx_keepalive:init(timer:seconds(Interval)),
     ensure_timer(alive_timer, Channel#channel{keepalive = Keepalive}).
-
-ensure_timer([Name], Channel) ->
-    ensure_timer(Name, Channel);
-ensure_timer([Name | Rest], Channel) ->
-    ensure_timer(Rest, ensure_timer(Name, Channel));
 
 ensure_timer(Name, Channel = #channel{timers = Timers}) ->
     TRef = maps:get(Name, Timers, undefined),
