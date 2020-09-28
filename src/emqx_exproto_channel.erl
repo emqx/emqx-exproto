@@ -56,7 +56,11 @@
           %% Request queue
           rqueue = queue:new(),
           %% Inflight function name
-          inflight = undefined
+          inflight = undefined,
+          %% Keepalive
+          keepalive :: maybe(emqx_keepalive:keepalive()),
+          %% Timers
+          timers ::  #{atom() => disabled | maybe(reference())}
          }).
 
 -opaque(channel() :: #channel{}).
@@ -68,6 +72,10 @@
                | {close, Reason :: atom()}).
 
 -type(replies() :: emqx_types:packet() | reply() | [reply()]).
+
+-define(TIMER_TABLE, #{
+          alive_timer  => keepalive
+         }).
 
 -define(INFO_KEYS, [conninfo, conn_state, clientinfo, session, will_msg]).
 
@@ -142,7 +150,9 @@ init(ConnInfo = #{socktype := Socktype,
     Channel = #channel{gcli = #{channel => GRpcChann},
                        conninfo = NConnInfo,
                        clientinfo = ClientInfo,
-                       conn_state = connecting},
+                       conn_state = connecting,
+                       timers = #{}
+                      },
 
     Req = #{conninfo =>
             peercert(Peercert,
@@ -183,22 +193,43 @@ handle_in(Data, Channel) ->
 -spec(handle_deliver(list(emqx_types:deliver()), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
-handle_deliver(Delivers, Channel) ->
-    %% TODO: ?? Nack delivers from shared subscriptions
-    Msgs = [ #{node => atom_to_binary(node(), utf8),
-               id => hexstr(emqx_message:id(Msg)),
-               qos => emqx_message:qos(Msg),
-               from => fmt_from(emqx_message:from(Msg)),
-               topic => emqx_message:topic(Msg),
-               payload => emqx_message:payload(Msg),
-               timestamp => emqx_message:timestamp(Msg)
-              } || {_, _, Msg} <- Delivers],
+handle_deliver(Delivers, Channel = #channel{clientinfo = ClientInfo}) ->
+    %% XXX: ?? Nack delivers from shared subscriptions
+    Mountpoint = maps:get(mountpoint, ClientInfo),
+    NodeStr = atom_to_binary(node(), utf8),
+    Msgs = lists:map(fun({_, _, Msg}) ->
+               ok = emqx_metrics:inc('messages.delivered'),
+               Msg1 = emqx_hooks:run_fold('message.delivered',
+                                          [ClientInfo], Msg),
+               NMsg = emqx_mountpoint:unmount(Mountpoint, Msg1),
+               #{node => NodeStr,
+                 id => hexstr(emqx_message:id(NMsg)),
+                 qos => emqx_message:qos(NMsg),
+                 from => fmt_from(emqx_message:from(NMsg)),
+                 topic => emqx_message:topic(NMsg),
+                 payload => emqx_message:payload(NMsg),
+                 timestamp => emqx_message:timestamp(NMsg)
+               }
+           end, Delivers),
     Req = #{messages => Msgs},
     {ok, try_dispatch(on_received_messages, wrap(Req), Channel)}.
 
 -spec(handle_timeout(reference(), Msg :: term(), channel())
       -> {ok, channel()}
        | {shutdown, Reason :: term(), channel()}).
+handle_timeout(_TRef, {keepalive, _StatVal},
+               Channel = #channel{keepalive = undefined}) ->
+    {ok, Channel};
+handle_timeout(_TRef, {keepalive, StatVal},
+               Channel = #channel{keepalive = Keepalive}) ->
+    case emqx_keepalive:check(StatVal, Keepalive) of
+        {ok, NKeepalive} ->
+            NChannel = Channel#channel{keepalive = NKeepalive},
+            {ok, reset_timer(alive_timer, NChannel)};
+        {error, timeout} ->
+            Req = #{type => 'KEEPALIVE'},
+            {ok, try_dispatch(on_timer_timeout, wrap(Req), Channel)}
+    end;
 handle_timeout(_TRef, Msg, Channel) ->
     ?WARN("Unexpected timeout: ~p", [Msg]),
     {ok, Channel}.
@@ -212,7 +243,7 @@ handle_call({send, Data}, Channel) ->
     {reply, ok, [{outgoing, Data}], Channel};
 
 handle_call(close, Channel) ->
-    {reply, ok, [{close, normal}], Channel};
+    {reply, ok, [{event, disconnected}, {close, normal}], Channel};
 
 handle_call({auth, ClientInfo, _Password}, Channel = #channel{authorized = true}) ->
     ?LOG(warning, "Duplicated authorized command, dropped ~p", [ClientInfo]),
@@ -220,35 +251,47 @@ handle_call({auth, ClientInfo, _Password}, Channel = #channel{authorized = true}
 handle_call({auth, ClientInfo0, Password},
             Channel = #channel{conninfo = ConnInfo,
                                clientinfo = ClientInfo}) ->
-    ClientInfo1 = maybe_assign_clientid(ClientInfo0),
-    ClientInfo2 = enrich_clientinfo(ClientInfo1, ClientInfo),
-    NConnInfo = enrich_conninfo(ClientInfo2, ConnInfo),
+    ClientInfo1 = enrich_clientinfo(ClientInfo0, ClientInfo),
+    NConnInfo = enrich_conninfo(ClientInfo1, ConnInfo),
 
     Channel1 = Channel#channel{conninfo = NConnInfo,
-                               clientinfo = ClientInfo2},
+                               clientinfo = ClientInfo1},
 
-    #{clientid := ClientId, username := Username} = ClientInfo2,
+    #{clientid := ClientId, username := Username} = ClientInfo1,
 
-    case emqx_access_control:authenticate(ClientInfo2#{password => Password}) of
+    case emqx_access_control:authenticate(ClientInfo1#{password => Password}) of
         {ok, AuthResult} ->
+            emqx_logger:set_metadata_clientid(ClientId),
             is_anonymous(AuthResult) andalso
                 emqx_metrics:inc('client.auth.anonymous'),
-            NClientInfo = maps:merge(ClientInfo2, AuthResult),
+            NClientInfo = maps:merge(ClientInfo1, AuthResult),
             NChannel = Channel1#channel{authorized = true,
                                         clientinfo = NClientInfo},
             case emqx_cm:open_session(true, NClientInfo, NConnInfo) of
                 {ok, _Session} ->
-                    {reply, ok, [{event, authorized}], NChannel};
+                    ?LOG(debug, "Client ~s (Username: '~s') authorized successfully!",
+                                [ClientId, Username]),
+                    {reply, ok, [{event, connected}], ensure_connected(NChannel)};
                 {error, Reason} ->
                     ?LOG(warning, "Client ~s (Username: '~s') open session failed for ~0p",
                          [ClientId, Username, Reason]),
-                    {shutdown, Reason, {error, Reason}, NChannel}
+                    {reply, {error, Reason}, Channel}
             end;
         {error, Reason} ->
             ?LOG(warning, "Client ~s (Username: '~s') login failed for ~0p",
                  [ClientId, Username, Reason]),
-            {shutdown, Reason, {error, Reason}, Channel1}
+            {reply, {error, Reason}, Channel}
     end;
+
+handle_call({start_timer, keepalive, Interval},
+            Channel = #channel{
+                         conninfo = ConnInfo,
+                         clientinfo = ClientInfo
+                        }) ->
+    NConnInfo = ConnInfo#{keepalive => Interval},
+    NClientInfo = ClientInfo#{keepalive => Interval},
+    NChannel = Channel#channel{conninfo = NConnInfo, clientinfo = NClientInfo},
+    {reply, ok, ensure_keepalive(NChannel)};
 
 handle_call({subscribe, TopicFilter, Qos},
             Channel = #channel{clientinfo = ClientInfo}) ->
@@ -323,8 +366,9 @@ handle_info(Info, Channel) ->
 
 -spec(terminate(any(), channel()) -> channel()).
 terminate(Reason, Channel) ->
+    NChannel = ensure_disconnected(Reason, Channel),
     Req = #{reason => stringfy(Reason)},
-    try_dispatch(on_socket_closed, wrap(Req), Channel).
+    try_dispatch(on_socket_closed, wrap(Req), NChannel).
 
 is_anonymous(#{anonymous := true}) -> true;
 is_anonymous(_AuthResult)          -> false.
@@ -344,11 +388,22 @@ do_subscribe(TopicFilters, Channel) ->
 do_subscribe(TopicFilter, SubOpts, Channel =
              #channel{clientinfo = ClientInfo = #{mountpoint := Mountpoint},
                       subscriptions = Subs}) ->
+    %% Mountpoint first
     NTopicFilter = emqx_mountpoint:mount(Mountpoint, TopicFilter),
     NSubOpts = maps:merge(?DEFAULT_SUBOPTS, SubOpts),
     SubId = maps:get(clientid, ClientInfo, undefined),
-    _ = emqx:subscribe(NTopicFilter, SubId, NSubOpts),
-    Channel#channel{subscriptions = Subs#{NTopicFilter => SubOpts}}.
+    IsNew = not maps:is_key(NTopicFilter, Subs),
+    case IsNew of
+        true ->
+            ok = emqx:subscribe(NTopicFilter, SubId, NSubOpts),
+            ok = emqx_hooks:run('session.subscribed',
+                                [ClientInfo, NTopicFilter, NSubOpts#{is_new => IsNew}]),
+            Channel#channel{subscriptions = Subs#{NTopicFilter => NSubOpts}};
+        _ ->
+            %% Update subopts
+            ok = emqx:subscribe(NTopicFilter, SubId, NSubOpts),
+            Channel#channel{subscriptions = Subs#{NTopicFilter => NSubOpts}}
+    end.
 
 do_unsubscribe(TopicFilters, Channel) ->
     NChannel = lists:foldl(
@@ -358,24 +413,94 @@ do_unsubscribe(TopicFilters, Channel) ->
     {ok, NChannel}.
 
 %% @private
-do_unsubscribe(TopicFilter, _SubOpts, Channel =
-               #channel{clientinfo = #{mountpoint := Mountpoint},
+do_unsubscribe(TopicFilter, UnSubOpts, Channel =
+               #channel{clientinfo = ClientInfo = #{mountpoint := Mountpoint},
                         subscriptions = Subs}) ->
-    TopicFilter1 = emqx_mountpoint:mount(Mountpoint, TopicFilter),
-    _ = emqx:unsubscribe(TopicFilter1),
-    Channel#channel{subscriptions = maps:remove(TopicFilter1, Subs)}.
+    NTopicFilter = emqx_mountpoint:mount(Mountpoint, TopicFilter),
+    case maps:find(NTopicFilter, Subs) of
+        {ok, SubOpts} ->
+            ok = emqx:unsubscribe(NTopicFilter),
+            ok = emqx_hooks:run('session.unsubscribed',
+                                [ClientInfo, TopicFilter, maps:merge(SubOpts, UnSubOpts)]),
+            Channel#channel{subscriptions = maps:remove(NTopicFilter, Subs)};
+        _ ->
+            Channel
+    end.
 
 %% @private
 parse_topic_filters(TopicFilters) ->
     lists:map(fun emqx_topic:parse/1, TopicFilters).
 
-%%--------------------------------------------------------------------
-%%
-%%--------------------------------------------------------------------
-
 -compile({inline, [is_acl_enabled/1]}).
 is_acl_enabled(#{zone := Zone, is_superuser := IsSuperuser}) ->
     (not IsSuperuser) andalso emqx_zone:enable_acl(Zone).
+
+%%--------------------------------------------------------------------
+%% Ensure & Hooks
+%%--------------------------------------------------------------------
+
+ensure_connected(Channel = #channel{conninfo = ConnInfo,
+                                    clientinfo = ClientInfo}) ->
+    NConnInfo = ConnInfo#{connected_at => erlang:system_time(millisecond)},
+    ok = run_hooks('client.connected', [ClientInfo, NConnInfo]),
+    Channel#channel{conninfo   = NConnInfo,
+                    conn_state = connected
+                   }.
+
+ensure_disconnected(Reason, Channel = #channel{conninfo = ConnInfo,
+                                               clientinfo = ClientInfo}) ->
+    NConnInfo = ConnInfo#{disconnected_at => erlang:system_time(millisecond)},
+    ok = run_hooks('client.disconnected', [ClientInfo, Reason, NConnInfo]),
+    Channel#channel{conninfo = NConnInfo, conn_state = disconnected}.
+
+run_hooks(Name, Args) ->
+    ok = emqx_metrics:inc(Name), emqx_hooks:run(Name, Args).
+
+run_hooks(Name, Args, Acc) ->
+    ok = emqx_metrics:inc(Name), emqx_hooks:run_fold(Name, Args, Acc).
+
+%%--------------------------------------------------------------------
+%% Enrich Keepalive
+
+ensure_keepalive(Channel = #channel{clientinfo = ClientInfo}) ->
+    ensure_keepalive_timer(maps:get(keepalive, ClientInfo, 0), Channel).
+
+ensure_keepalive_timer(Interval, Channel) when Interval =< 0 ->
+    Channel;
+ensure_keepalive_timer(Interval, Channel) ->
+    Keepalive = emqx_keepalive:init(timer:seconds(Interval)),
+    ensure_timer(alive_timer, Channel#channel{keepalive = Keepalive}).
+
+ensure_timer([Name], Channel) ->
+    ensure_timer(Name, Channel);
+ensure_timer([Name | Rest], Channel) ->
+    ensure_timer(Rest, ensure_timer(Name, Channel));
+
+ensure_timer(Name, Channel = #channel{timers = Timers}) ->
+    TRef = maps:get(Name, Timers, undefined),
+    Time = interval(Name, Channel),
+    case TRef == undefined andalso Time > 0 of
+        true  -> ensure_timer(Name, Time, Channel);
+        false -> Channel %% Timer disabled or exists
+    end.
+
+ensure_timer(Name, Time, Channel = #channel{timers = Timers}) ->
+    Msg = maps:get(Name, ?TIMER_TABLE),
+    TRef = emqx_misc:start_timer(Time, Msg),
+    Channel#channel{timers = Timers#{Name => TRef}}.
+
+reset_timer(Name, Channel) ->
+    ensure_timer(Name, clean_timer(Name, Channel)).
+
+clean_timer(Name, Channel = #channel{timers = Timers}) ->
+    Channel#channel{timers = maps:remove(Name, Timers)}.
+
+interval(alive_timer, #channel{keepalive = Keepalive}) ->
+    emqx_keepalive:info(interval, Keepalive).
+
+%%--------------------------------------------------------------------
+%% Dispatch
+%%--------------------------------------------------------------------
 
 wrap(Req) ->
      Req#{conn => pid_to_list(self())}.
@@ -401,20 +526,14 @@ try_dispatch(FunName, Req, Channel = #channel{rqueue = Queue}) ->
 %% Format
 %%--------------------------------------------------------------------
 
-maybe_assign_clientid(ClientInfo) ->
-    case maps:get(clientid, ClientInfo, undefined) of
-        undefined ->
-            ClientInfo#{clientid => emqx_guid:to_base62(emqx_guid:gen())};
-        _ ->
-            ClientInfo
-    end.
-
 enrich_conninfo(InClientInfo, ConnInfo) ->
-    maps:merge(ConnInfo, maps:with([proto_name, proto_ver, clientid, username, keepalive], InClientInfo)).
+    Ks = [proto_name, proto_ver, clientid, username],
+    maps:merge(ConnInfo, maps:with(Ks, InClientInfo)).
 
 enrich_clientinfo(InClientInfo = #{proto_name := ProtoName}, ClientInfo) ->
-    NClientInfo = maps:merge(ClientInfo, maps:with([clientid, username, mountpoint], InClientInfo)),
-    NClientInfo#{protocol => lowcase_atom(ProtoName)}.
+    Ks = [clientid, username, mountpoint],
+    NClientInfo = maps:merge(ClientInfo, maps:with(Ks, InClientInfo)),
+    NClientInfo#{protocol => ProtoName}.
 
 default_conninfo(ConnInfo) ->
     ConnInfo#{proto_name => undefined,
@@ -443,11 +562,6 @@ default_clientinfo(#{peername := {PeerHost, _},
 
 stringfy(Reason) ->
     unicode:characters_to_binary((io_lib:format("~0p", [Reason]))).
-
-lowcase_atom(undefined) ->
-    undefined;
-lowcase_atom(S) ->
-    binary_to_atom(string:lowercase(S), utf8).
 
 hexstr(Bin) ->
     [io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Bin].

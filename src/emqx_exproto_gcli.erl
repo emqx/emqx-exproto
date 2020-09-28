@@ -21,6 +21,8 @@
 
 -include_lib("emqx/include/logger.hrl").
 
+-logger_header("[ExProto gClient]").
+
 %% APIs
 -export([async_call/3]).
 
@@ -74,7 +76,7 @@ handle_call(_Request, _From, State) ->
 handle_cast({rpc, Fun, Req, Options, From}, State) ->
     case catch apply(?CONN_ADAPTER_MOD, Fun, [Req, Options]) of
         {ok, Resp, _Metadata} ->
-            ?LOG(debug, "Response ~p {ok, ~0p, ~0p}", [Fun, Resp, _Metadata]),
+            ?LOG(debug, "~p got {ok, ~0p, ~0p}", [Fun, Resp, _Metadata]),
             reply(From, Fun, {ok, Resp});
         {error, {Code, Msg}, _Metadata} ->
             ?LOG(error, "CALL ~0p:~0p(~0p, ~0p) response errcode: ~0p, errmsg: ~0p",
