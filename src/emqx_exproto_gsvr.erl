@@ -19,6 +19,7 @@
 
 -behavior(emqx_exproto_v_1_connection_adapter_bhvr).
 
+-include("emqx_exproto.hrl").
 -include_lib("emqx/include/logger.hrl").
 
 -logger_header("[ExProto gServer]").
@@ -40,35 +41,21 @@
 %%--------------------------------------------------------------------
 
 -spec send(ctx:ctx(), emqx_exproto_pb:send_bytes_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 send(Ctx, Req = #{conn := Conn, bytes := Bytes}) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, {send, Bytes}) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~s send falied, butes: ~p, reason: ~0p",
-                 [Conn, Bytes, Reason]),
-            {ok, #{result => false, reason => stringfy(Reason) }, Ctx}
-    end.
+    {ok, response(call(Conn, {send, Bytes})), Ctx}.
 
 -spec close(ctx:ctx(), emqx_exproto_pb:close_socket_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 close(Ctx, Req = #{conn := Conn}) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, close) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~p close socket falied, reason: ~0p",
-                 [Conn, Reason]),
-            {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-    end.
+    {ok, response(call(Conn, close)), Ctx}.
 
 -spec authenticate(ctx:ctx(), emqx_exproto_pb:authenticate_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 authenticate(Ctx, Req = #{conn := Conn,
                           password := Password,
@@ -76,85 +63,52 @@ authenticate(Ctx, Req = #{conn := Conn,
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
     case validate(clientinfo, ClientInfo) of
         false ->
-            {ok, #{result => false, reason => <<"Internal params">>}, Ctx};
+            {ok, response({error, ?RESP_REQUIRED_PARAMS_MISSED}), Ctx};
         _ ->
-            case call(Conn, {auth, ClientInfo, Password}) of
-                ok ->
-                    {ok, #{result => true}, Ctx};
-                {error, Reason} ->
-                    ?LOG(warning, "~p authenticate falied, clientinfo ~p reason: ~0p",
-                         [Conn, ClientInfo, Reason]),
-                    {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-            end
+            {ok, response(call(Conn, {auth, ClientInfo, Password})), Ctx}
     end.
 
 -spec start_timer(ctx:ctx(), emqx_exproto_pb:publish_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 start_timer(Ctx, Req = #{conn := Conn, type := Type, interval := Interval})
   when Type =:= 'KEEPALIVE' andalso Interval > 0 ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, {start_timer, keepalive, Interval}) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~p start ~p timer in ~w seconds failed, reason: ~0p",
-                 [Conn, Type, Interval]),
-            {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-    end;
-start_timer(_Ctx, Req) ->
+    {ok, response(call(Conn, {start_timer, keepalive, Interval})), Ctx};
+start_timer(Ctx, Req) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, #{result => false, reason => <<"Invalid params">>}}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
 
 -spec publish(ctx:ctx(), emqx_exproto_pb:publish_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 publish(Ctx, Req = #{conn := Conn, topic := Topic, qos := Qos, payload := Payload})
   when ?IS_QOS(Qos) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, {publish, Topic, Qos, Payload}) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~p publish to ~p, qos: ~p, payload: ~p reason: ~0p",
-                 [Conn, Topic, Qos, Payload, Reason]),
-            {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-    end;
-publish(_Ctx, Req) ->
+    {ok, response(call(Conn, {publish, Topic, Qos, Payload})), Ctx};
+
+publish(Ctx, Req) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, #{result => false, reason => <<"Invalid params">>}}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
 
 -spec subscribe(ctx:ctx(), emqx_exproto_pb:subscribe_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 subscribe(Ctx, Req = #{conn := Conn, topic := Topic, qos := Qos})
   when ?IS_QOS(Qos) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, {subscribe, Topic, Qos}) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~p subscribe ~p falied, reason: ~0p",
-                 [Conn, Topic, Reason]),
-            {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-    end;
-subscribe(_Ctx, Req) ->
+    {ok, response(call(Conn, {subscribe, Topic, Qos})), Ctx};
+
+subscribe(Ctx, Req) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, #{result => false, reason => <<"Invalid params">>}}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
 
 -spec unsubscribe(ctx:ctx(), emqx_exproto_pb:unsubscribe_request())
-  -> {ok, emqx_exproto_pb:bool_result(), ctx:ctx()}
+  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
    | grpcbox_stream:grpc_error_response().
 unsubscribe(Ctx, Req = #{conn := Conn, topic := Topic}) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    case call(Conn, {unsubscribe, Topic}) of
-        ok ->
-            {ok, #{result => true}, Ctx};
-        {error, Reason} ->
-            ?LOG(warning, "~p unsubscribe ~p falied, reason: ~0p",
-                 [Conn, Topic, Reason]),
-            {ok, #{result => false, reason => stringfy(Reason)}, Ctx}
-    end.
+    {ok, response(call(Conn, {unsubscribe, Topic})), Ctx}.
 
 %%--------------------------------------------------------------------
 %% Internal funcs
@@ -166,13 +120,15 @@ to_pid(ConnStr) ->
 call(ConnStr, Req) ->
     case catch  to_pid(ConnStr) of
         {'EXIT', {badarg, _}} ->
-            {error, bad_conn_type};
+            {error, ?RESP_PARAMS_TYPE_ERROR,
+                    <<"The conn type error">>};
         Pid when is_pid(Pid) ->
             case erlang:is_process_alive(Pid) of
                 true ->
                     emqx_exproto_conn:call(Pid, Req);
                 false ->
-                    {error, conn_process_dieied}
+                    {error, ?RESP_CONN_PROCESS_NOT_ALIVE,
+                            <<"Connection process is not alive">>}
             end
     end.
 
@@ -185,3 +141,14 @@ stringfy(Reason) ->
 validate(clientinfo, M) ->
     Required = [proto_name, proto_ver, clientid],
     lists:all(fun(K) -> maps:is_key(K, M) end, Required).
+
+response(ok) ->
+    #{code => ?RESP_SUCCESS};
+response({error, Code, Reason})
+  when ?IS_GRPC_RESULT_CODE(Code) ->
+    #{code => Code, message => stringfy(Reason)};
+response({error, Code})
+  when ?IS_GRPC_RESULT_CODE(Code) ->
+    #{code => Code};
+response(Other) ->
+    #{code => ?RESP_UNKNOWN, message => stringfy(Other)}.

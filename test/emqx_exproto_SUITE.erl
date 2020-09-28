@@ -151,7 +151,9 @@ t_auth_deny(Cfg) ->
     send(Sock, ConnBin),
     {ok, ConnAckBin} = recv(Sock, 5000),
 
-    close(Sock),
+    SockType =/= udp andalso begin
+        {error, closed} = recv(Sock, 5000)
+    end,
     meck:unload([emqx_access_control]).
 
 t_acl_deny(Cfg) ->
@@ -210,12 +212,13 @@ t_keepalive_timeout(Cfg) ->
 
     send(Sock, ConnBin),
     {ok, ConnAckBin} = recv(Sock, 5000),
-    timer:sleep(5000),
 
     DisconnectBin = frame_disconnect(),
-    {ok, DisconnectBin} = recv(Sock, 5000),
-    {error, closed} = recv(Sock, 5000),
-    ok.
+    {ok, DisconnectBin} = recv(Sock, 10000),
+
+    SockType =/= udp andalso begin
+        {error, closed} = recv(Sock, 5000)
+    end, ok.
 
 t_hook_connected_disconnected(Cfg) ->
     SockType = proplists:get_value(listener_type, Cfg),
@@ -236,6 +239,7 @@ t_hook_connected_disconnected(Cfg) ->
     emqx:hook('client.connected', HookFun1),
     emqx:hook('client.disconnected', HookFun2),
 
+
     send(Sock, ConnBin),
     {ok, ConnAckBin} = recv(Sock, 5000),
 
@@ -253,8 +257,10 @@ t_hook_connected_disconnected(Cfg) ->
     after 1000 ->
         error(hook_is_not_running)
     end,
-    {error, closed} = recv(Sock, 5000),
 
+    SockType =/= udp andalso begin
+        {error, closed} = recv(Sock, 5000)
+    end,
     emqx:unhook('client.connected', HookFun1),
     emqx:unhook('client.disconnected', HookFun2).
 
