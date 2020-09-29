@@ -20,8 +20,10 @@
 
 -export([ start_listeners/0
         , stop_listeners/0
+        , start_listener/1
         , start_listener/4
         , stop_listener/4
+        , stop_listener/1
         ]).
 
 -export([ start_servers/0
@@ -36,11 +38,16 @@
 
 -spec(start_listeners() -> ok).
 start_listeners() ->
-    lists:foreach(fun start_listener/1, application:get_env(?APP, listeners, [])).
+    Listeners = application:get_env(?APP, listeners, []),
+    NListeners = [start_protocol_handler_instance(Listener)
+                  || Listener <- Listeners],
+    lists:foreach(fun start_listener/1, NListeners).
 
 -spec(stop_listeners() -> ok).
 stop_listeners() ->
-    lists:foreach(fun stop_listener/1, application:get_env(?APP, listeners, [])).
+    Listeners = application:get_env(?APP, listeners, []),
+    lists:foreach(fun stop_protocol_handler_instance/1, Listeners),
+    lists:foreach(fun stop_listener/1, Listeners).
 
 -spec(start_servers() -> ok).
 start_servers() ->
@@ -53,6 +60,24 @@ stop_servers() ->
 %%--------------------------------------------------------------------
 %% Internal functions
 %%--------------------------------------------------------------------
+
+start_protocol_handler_instance({_Proto, _LisType, _ListenOn, Opts}) ->
+    Name = name(_Proto, _LisType),
+    {value, {_, HandlerOpts}, LisOpts} = lists:keytake(handler, 1, Opts),
+    {Endpoints, ChannelOptions} = handler_opts(HandlerOpts),
+    case emqx_exproto_sup:start_grpc_client_channel(Name, Endpoints, ChannelOptions) of
+        {ok, _ClientChannelPid} ->
+            {_Proto, _LisType, _ListenOn, [{handler, Name} | LisOpts]};
+        {error, Reason} ->
+            io:format(standard_error, "Failed to start ~s's protocol handler - ~0p~n!",
+                      [Name, Reason]),
+            error(Reason)
+    end.
+
+stop_protocol_handler_instance({_Proto, _LisType, _ListenOn, _Opts}) ->
+    Name = name(_Proto, _LisType),
+    _ = emqx_exproto_sup:stop_grpc_client_channel(Name),
+    ok.
 
 start_server({Name, Port, SSLOptions}) ->
     case emqx_exproto_sup:start_grpc_server(Name, Port, SSLOptions) of
@@ -71,22 +96,13 @@ stop_server({Name, Port, _SSLOptions}) ->
 
 start_listener({Proto, LisType, ListenOn, Opts}) ->
     Name = name(Proto, LisType),
-    {value, {_, CallbackOpts}, LisOpts} = lists:keytake(handler, 1, Opts),
-    {Endpoints, ChannelOptions} = handler_opts(CallbackOpts),
-    case emqx_exproto_sup:start_grpc_client_channel(Name, Endpoints, ChannelOptions) of
-        {ok, _ClientChannelPid}->
-            case start_listener(LisType, Name, ListenOn, [{handler, Name} |LisOpts]) of
-                {ok, _} ->
-                    io:format("Start ~s listener on ~s successfully.~n",
-                              [Name, format(ListenOn)]);
-                {error, Reason} ->
-                    io:format(standard_error, "Failed to start ~s listener on ~s - ~0p~n!",
-                              [Name, format(ListenOn), Reason]),
-                    error(Reason)
-            end;
+    case start_listener(LisType, Name, ListenOn, Opts) of
+        {ok, _} ->
+            io:format("Start ~s listener on ~s successfully.~n",
+                      [Name, format(ListenOn)]);
         {error, Reason} ->
-            io:format(standard_error, "Failed to start ~s's protocol handler - ~0p~n!",
-                      [Name, Reason]),
+            io:format(standard_error, "Failed to start ~s listener on ~s - ~0p~n!",
+                      [Name, format(ListenOn), Reason]),
             error(Reason)
     end.
 
@@ -113,7 +129,6 @@ stop_listener({Proto, LisType, ListenOn, Opts}) ->
     StopRet = stop_listener(LisType, Name, ListenOn, Opts),
     case StopRet of
         ok ->
-            _ = emqx_exproto_sup:stop_grpc_client_channel(Name),
             io:format("Stop ~s listener on ~s successfully.~n",
                       [Name, format(ListenOn)]);
         {error, Reason} ->
@@ -131,8 +146,12 @@ name(Proto, LisType) ->
     list_to_atom(lists:flatten(io_lib:format("~s:~s", [Proto, LisType]))).
 
 %% @private
+format(Port) when is_integer(Port) ->
+    io_lib:format("0.0.0.0:~w", [Port]);
 format({Addr, Port}) when is_list(Addr) ->
-    io_lib:format("~s:~w", [Addr, Port]).
+    io_lib:format("~s:~w", [Addr, Port]);
+format({Addr, Port}) when is_tuple(Addr) ->
+    io_lib:format("~s:~w", [inet:ntoa(Addr), Port]).
 
 %% @private
 merge_tcp_default(Opts) ->
