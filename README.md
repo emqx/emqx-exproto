@@ -17,8 +17,6 @@ The `emqx_exproto` extremly enhance the extensibility for EMQ X. It allow using 
 
 See: `priv/protos/exproto.proto`
 
-### CLI
-
 ## Example
 
 ## Recommended gRPC Framework
