@@ -39,14 +39,14 @@
 -spec(start_listeners() -> ok).
 start_listeners() ->
     Listeners = application:get_env(?APP, listeners, []),
-    NListeners = [start_protocol_handler_instance(Listener)
+    NListeners = [start_connection_handler_instance(Listener)
                   || Listener <- Listeners],
     lists:foreach(fun start_listener/1, NListeners).
 
 -spec(stop_listeners() -> ok).
 stop_listeners() ->
     Listeners = application:get_env(?APP, listeners, []),
-    lists:foreach(fun stop_protocol_handler_instance/1, Listeners),
+    lists:foreach(fun stop_connection_handler_instance/1, Listeners),
     lists:foreach(fun stop_listener/1, Listeners).
 
 -spec(start_servers() -> ok).
@@ -61,7 +61,7 @@ stop_servers() ->
 %% Internal functions
 %%--------------------------------------------------------------------
 
-start_protocol_handler_instance({_Proto, _LisType, _ListenOn, Opts}) ->
+start_connection_handler_instance({_Proto, _LisType, _ListenOn, Opts}) ->
     Name = name(_Proto, _LisType),
     {value, {_, HandlerOpts}, LisOpts} = lists:keytake(handler, 1, Opts),
     {Endpoints, ChannelOptions} = handler_opts(HandlerOpts),
@@ -69,12 +69,12 @@ start_protocol_handler_instance({_Proto, _LisType, _ListenOn, Opts}) ->
         {ok, _ClientChannelPid} ->
             {_Proto, _LisType, _ListenOn, [{handler, Name} | LisOpts]};
         {error, Reason} ->
-            io:format(standard_error, "Failed to start ~s's protocol handler - ~0p~n!",
+            io:format(standard_error, "Failed to start ~s's connection handler - ~0p~n!",
                       [Name, Reason]),
             error(Reason)
     end.
 
-stop_protocol_handler_instance({_Proto, _LisType, _ListenOn, _Opts}) ->
+stop_connection_handler_instance({_Proto, _LisType, _ListenOn, _Opts}) ->
     Name = name(_Proto, _LisType),
     _ = emqx_exproto_sup:stop_grpc_client_channel(Name),
     ok.
