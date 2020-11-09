@@ -38,41 +38,38 @@ start_link() ->
 -spec start_grpc_server(atom(), inet:port_number(), list())
   -> {ok, pid()} | {error, term()}.
 start_grpc_server(Name, Port, SSLOptions) ->
-    ServerOpts = #{},
-    GrpcOpts = #{service_protos => [emqx_exproto_pb],
-                 services => #{'emqx.exproto.v1.ConnectionAdapter' => emqx_exproto_gsvr}},
-    ListenOpts = #{port => Port, socket_options => [{reuseaddr, true}]},
-    PoolOpts = #{size => 8},
-    TransportOpts = maps:from_list(SSLOptions),
-    Spec = #{id => Name,
-             start => {grpcbox_services_sup, start_link,
-                       [ServerOpts, GrpcOpts, ListenOpts,
-                        PoolOpts, TransportOpts]},
-             type => supervisor,
-             restart => permanent,
-             shutdown => infinity},
-    supervisor:start_child(?MODULE, Spec).
+    Services = #{protos => [emqx_exproto_pb],
+                 services => #{'emqx.exproto.v1.ConnectionAdapter' => emqx_exproto_gsvr}
+                },
+    Options = case SSLOptions of
+                  [] -> [];
+                  _ ->
+                      [{ssl_options, lists:keydelete(ssl, 1, SSLOptions)}]
+              end,
+    grpc:start_server(prefix(Name), Port, Services, Options).
 
 -spec stop_grpc_server(atom()) -> ok.
 stop_grpc_server(Name) ->
-    ok = supervisor:terminate_child(?MODULE, Name),
-    ok = supervisor:delete_child(?MODULE, Name).
+    grpc:stop_server(prefix(Name)).
 
 -spec start_grpc_client_channel(
         atom(),
-        [grpcbox_channel:endpoint()],
-        grpcbox_channel:options()) -> {ok, pid()} | {error, term()}.
-start_grpc_client_channel(Name, Endpoints, Options0) ->
-    Options = Options0#{sync_start => true},
-    Spec = #{id => Name,
-             start => {grpcbox_channel, start_link, [Name, Endpoints, Options]},
-             type => worker},
-    supervisor:start_child(?MODULE, Spec).
+        uri_string:uri_string(),
+        grpc_client:grpc_opts()) -> {ok, pid()} | {error, term()}.
+start_grpc_client_channel(Name, SvrAddr, ClientOpts) ->
+    grpc_client_sup:create_channel_pool(Name, SvrAddr, ClientOpts).
 
 -spec stop_grpc_client_channel(atom()) -> ok.
 stop_grpc_client_channel(Name) ->
-    ok = supervisor:terminate_child(?MODULE, Name),
-    ok = supervisor:delete_child(?MODULE, Name).
+    grpc_client_sup:stop_channel_pool(Name).
+
+%% @private
+prefix(Name) when is_atom(Name) ->
+    "exproto:" ++ atom_to_list(Name);
+prefix(Name) when is_binary(Name) ->
+    "exproto:" ++ binary_to_list(Name);
+prefix(Name) when is_list(Name) ->
+    "exproto:" ++ Name.
 
 %%--------------------------------------------------------------------
 %% Supervisor callbacks
