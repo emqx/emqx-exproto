@@ -64,8 +64,8 @@ stop_servers() ->
 start_connection_handler_instance({_Proto, _LisType, _ListenOn, Opts}) ->
     Name = name(_Proto, _LisType),
     {value, {_, HandlerOpts}, LisOpts} = lists:keytake(handler, 1, Opts),
-    {Endpoints, ChannelOptions} = handler_opts(HandlerOpts),
-    case emqx_exproto_sup:start_grpc_client_channel(Name, Endpoints, ChannelOptions) of
+    {SvrAddr, ChannelOptions} = handler_opts(HandlerOpts),
+    case emqx_exproto_sup:start_grpc_client_channel(Name, SvrAddr, ChannelOptions) of
         {ok, _ClientChannelPid} ->
             {_Proto, _LisType, _ListenOn, [{handler, Name} | LisOpts]};
         {error, Reason} ->
@@ -175,9 +175,13 @@ handler_opts(Opts) ->
     Scheme = proplists:get_value(scheme, Opts),
     Host = proplists:get_value(host, Opts),
     Port = proplists:get_value(port, Opts),
-    Options = proplists:get_value(options, Opts, []),
-    SslOpts = case Scheme of
-                   https -> proplists:get_value(ssl_options, Opts, []);
-                   _ -> []
-               end,
-     {[{Scheme, Host, Port, SslOpts}], maps:from_list(Options)}.
+    SvrAddr = lists:flatten(io_lib:format("~s://~s:~w", [Scheme, Host, Port])),
+    ClientOpts = case Scheme of
+                     https ->
+                         SslOpts = lists:keydelete(ssl, 1, proplists:get_value(ssl_options, Opts, [])),
+                         #{gun_opts =>
+                           #{transport => ssl,
+                             transport_opts => SslOpts}};
+                     _ -> #{}
+                 end,
+    {SvrAddr, ClientOpts}.

@@ -40,75 +40,75 @@
 %% gRPC ConnectionAdapter service
 %%--------------------------------------------------------------------
 
--spec send(ctx:ctx(), emqx_exproto_pb:send_bytes_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-send(Ctx, Req = #{conn := Conn, bytes := Bytes}) ->
+-spec send(emqx_exproto_pb:send_bytes_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+send(Req = #{conn := Conn, bytes := Bytes}, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, {send, Bytes})), Ctx}.
+    {ok, response(call(Conn, {send, Bytes})), Md}.
 
--spec close(ctx:ctx(), emqx_exproto_pb:close_socket_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-close(Ctx, Req = #{conn := Conn}) ->
+-spec close(emqx_exproto_pb:close_socket_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+close(Req = #{conn := Conn}, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, close)), Ctx}.
+    {ok, response(call(Conn, close)), Md}.
 
--spec authenticate(ctx:ctx(), emqx_exproto_pb:authenticate_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-authenticate(Ctx, Req = #{conn := Conn,
-                          password := Password,
-                          clientinfo := ClientInfo}) ->
+-spec authenticate(emqx_exproto_pb:authenticate_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+authenticate(Req = #{conn := Conn,
+                     password := Password,
+                     clientinfo := ClientInfo}, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
     case validate(clientinfo, ClientInfo) of
         false ->
-            {ok, response({error, ?RESP_REQUIRED_PARAMS_MISSED}), Ctx};
+            {ok, response({error, ?RESP_REQUIRED_PARAMS_MISSED}), Md};
         _ ->
-            {ok, response(call(Conn, {auth, ClientInfo, Password})), Ctx}
+            {ok, response(call(Conn, {auth, ClientInfo, Password})), Md}
     end.
 
--spec start_timer(ctx:ctx(), emqx_exproto_pb:publish_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-start_timer(Ctx, Req = #{conn := Conn, type := Type, interval := Interval})
+-spec start_timer(emqx_exproto_pb:timer_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+start_timer(Req = #{conn := Conn, type := Type, interval := Interval}, Md)
   when Type =:= 'KEEPALIVE' andalso Interval > 0 ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, {start_timer, keepalive, Interval})), Ctx};
-start_timer(Ctx, Req) ->
+    {ok, response(call(Conn, {start_timer, keepalive, Interval})), Md};
+start_timer(Req, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Md}.
 
--spec publish(ctx:ctx(), emqx_exproto_pb:publish_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-publish(Ctx, Req = #{conn := Conn, topic := Topic, qos := Qos, payload := Payload})
+-spec publish(emqx_exproto_pb:publish_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+publish(Req = #{conn := Conn, topic := Topic, qos := Qos, payload := Payload}, Md)
   when ?IS_QOS(Qos) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, {publish, Topic, Qos, Payload})), Ctx};
+    {ok, response(call(Conn, {publish, Topic, Qos, Payload})), Md};
 
-publish(Ctx, Req) ->
+publish(Req, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Md}.
 
--spec subscribe(ctx:ctx(), emqx_exproto_pb:subscribe_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-subscribe(Ctx, Req = #{conn := Conn, topic := Topic, qos := Qos})
+-spec subscribe(emqx_exproto_pb:subscribe_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+subscribe(Req = #{conn := Conn, topic := Topic, qos := Qos}, Md)
   when ?IS_QOS(Qos) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, {subscribe, Topic, Qos})), Ctx};
+    {ok, response(call(Conn, {subscribe, Topic, Qos})), Md};
 
-subscribe(Ctx, Req) ->
+subscribe(Req, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Ctx}.
+    {ok, response({error, ?RESP_PARAMS_TYPE_ERROR}), Md}.
 
--spec unsubscribe(ctx:ctx(), emqx_exproto_pb:unsubscribe_request())
-  -> {ok, emqx_exproto_pb:code_response(), ctx:ctx()}
-   | grpcbox_stream:grpc_error_response().
-unsubscribe(Ctx, Req = #{conn := Conn, topic := Topic}) ->
+-spec unsubscribe(emqx_exproto_pb:unsubscribe_request(), grpc:metadata())
+    -> {ok, emqx_exproto_pb:code_response(), grpc:metadata()}
+     | {error, grpc_cowboy_h:error_response()}.
+unsubscribe(Req = #{conn := Conn, topic := Topic}, Md) ->
     ?LOG(debug, "Recv ~p function with request ~0p", [?FUNCTION_NAME, Req]),
-    {ok, response(call(Conn, {unsubscribe, Topic})), Ctx}.
+    {ok, response(call(Conn, {unsubscribe, Topic})), Md}.
 
 %%--------------------------------------------------------------------
 %% Internal funcs
