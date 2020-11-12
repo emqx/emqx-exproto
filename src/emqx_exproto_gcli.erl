@@ -86,8 +86,8 @@ handle_cast({rpc, Fun, Req, Options, From}, State) ->
             ?LOG(error, "CALL ~0p:~0p(~0p, ~0p) error: ~0p",
                         [?CONN_ADAPTER_MOD, Fun, Req, Options, Reason]),
             reply(From, Fun, {error, Reason});
-        {'EXIT', Reason, Stk} ->
-            ?LOG(error, "CALL ~0p:~0p(~0p, ~0p) throw an exception: ~0p, stacktrace: ~p",
+        {'EXIT', {Reason, Stk}} ->
+            ?LOG(error, "CALL ~0p:~0p(~0p, ~0p) throw an exception: ~0p, stacktrace: ~0p",
                         [?CONN_ADAPTER_MOD, Fun, Req, Options, Reason, Stk]),
             reply(From, Fun, {error, Reason})
     end,
