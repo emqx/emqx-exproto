@@ -61,8 +61,9 @@
           sockstate :: emqx_types:sockstate(),
           %% The {active, N} option
           active_n :: pos_integer(),
-          %% Send function
-          sendfun :: function(),
+          %% BACKW: e4.2.0-e4.2.1
+          %% We should remove it
+          sendfun :: function() | undefined,
           %% Limiter
           limiter :: maybe(emqx_limiter:limiter()),
           %% Limit Timer
@@ -203,14 +204,10 @@ esockd_getstat({udp, _SockPid, Sock}, Stats) ->
 esockd_getstat({esockd_transport, Sock}, Stats) ->
     esockd_transport:getstat(Sock, Stats).
 
-sendfun({udp, _SockPid, Sock}, {Ip, Port}) ->
-    fun(Data) ->
-        gen_udp:send(Sock, Ip, Port, Data)
-    end;
-sendfun({esockd_transport, Sock}, _) ->
-    fun(Data) ->
-        esockd_transport:async_send(Sock, Data)
-    end.
+send(Data, #state{socket = {udp, _SockPid, Sock}, peername = {Ip, Port}}) ->
+    gen_udp:send(Sock, Ip, Port, Data);
+send(Data, #state{socket = {esockd_transport, Sock}}) ->
+        esockd_transport:async_send(Sock, Data).
 
 %%--------------------------------------------------------------------
 %% callbacks
@@ -255,7 +252,7 @@ init_state(WrappedSock, Peername, Options) ->
            sockname     = Sockname,
            sockstate    = idle,
            active_n     = ActiveN,
-           sendfun      = sendfun(WrappedSock, Peername),
+           sendfun      = undefined,
            limiter      = undefined,
            channel      = Channel,
            gc_state     = GcState,
@@ -559,7 +556,7 @@ with_channel(Fun, Args, State = #state{channel = Channel}) ->
 %%--------------------------------------------------------------------
 %% Handle outgoing packets
 
-handle_outgoing(IoData, #state{socket = Socket, sendfun = SendFun}) ->
+handle_outgoing(IoData, State = #state{socket = Socket}) ->
     ?LOG(debug, "SEND ~0p", [IoData]),
 
     Oct = iolist_size(IoData),
@@ -571,7 +568,7 @@ handle_outgoing(IoData, #state{socket = Socket, sendfun = SendFun}) ->
 
     %% FIXME:
     %%ok = emqx_metrics:inc('bytes.sent', Oct),
-    case SendFun(IoData) of
+    case send(IoData, State) of
         ok -> ok;
         Error = {error, _Reason} ->
             %% Send an inet_reply to postpone handling the error
