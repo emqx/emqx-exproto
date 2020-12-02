@@ -4,11 +4,17 @@
     {"e4.2.0", [
       {restart_application, emqx_exproto}
     ]},
+    {"e4.2.1", [
+      {load_module, emqx_exproto_conn, brutal_purge, soft_purge, []},
+    ]},
     {<<".*">>, []}
   ],
   [
     {"e4.2.0", [
       {restart_application, emqx_exproto}
+    ]},
+    {"e4.2.1", [
+      {load_module, emqx_exproto_conn, brutal_purge, soft_purge, []},
     ]},
     {<<".*">>, []}
   ]
