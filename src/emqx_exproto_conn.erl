@@ -207,7 +207,7 @@ esockd_getstat({esockd_transport, Sock}, Stats) ->
 send(Data, #state{socket = {udp, _SockPid, Sock}, peername = {Ip, Port}}) ->
     gen_udp:send(Sock, Ip, Port, Data);
 send(Data, #state{socket = {esockd_transport, Sock}}) ->
-        esockd_transport:async_send(Sock, Data).
+    esockd_transport:async_send(Sock, Data).
 
 %%--------------------------------------------------------------------
 %% callbacks
