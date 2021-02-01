@@ -569,7 +569,7 @@ default_conninfo(ConnInfo) ->
               clean_start => true,
               clientid => undefined,
               username => undefined,
-              conn_props => [],
+              conn_props => #{},
               connected => true,
               connected_at => erlang:system_time(millisecond),
               keepalive => undefined,
