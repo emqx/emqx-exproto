@@ -17,13 +17,13 @@ jobs:
           with:
             java-version: '8.0.x'
             java-package: jdk
-        - name: Code dialyzer
-          run: |
-            make xref
-            make dialyzer
+#        - name: Code dialyzer
+#          run: |
+#            make xref
+#            make dialyzer
         - name: Run tests
           run: |
-            make eunit
+            #make eunit
             make ct
             make cover
             #- name: Coveralls
