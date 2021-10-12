@@ -1,7 +1,7 @@
 %% -*-: erlang -*-
 {VSN,
   [
-    {<<"e4.2.[4-7]">>, [
+    {<<"e4.2.[4-8]">>, [
       {load_module, emqx_exproto_gsvr, brutal_purge, soft_purge, []},
       {load_module, emqx_exproto_conn, brutal_purge, soft_purge, []},
       {load_module, emqx_exproto_channel, brutal_purge, soft_purge, []}
@@ -12,7 +12,7 @@
     {<<".*">>, []}
   ],
   [
-    {<<"e4.2.[4-7]">>, [
+    {<<"e4.2.[4-8]">>, [
       {load_module, emqx_exproto_gsvr, brutal_purge, soft_purge, []},
       {load_module, emqx_exproto_conn, brutal_purge, soft_purge, []},
       {load_module, emqx_exproto_channel, brutal_purge, soft_purge, []}
